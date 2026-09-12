@@ -8,6 +8,7 @@ import android.os.Build;
 import com.chaquo.python.Python;
 import com.chaquo.python.internal.Common;
 import com.github.catvod.Init;
+import com.github.catvod.crawler.SpiderDebug;
 
 import org.jetbrains.annotations.NotNull;
 import org.json.JSONException;
@@ -172,9 +173,38 @@ public class Platform extends Python.Platform {
     }
 
     private void loadNativeLibs() throws JSONException {
+        loadLibcShim();
         String pythonVer = buildJson.getString("python_version");
         for (String lib : new String[]{"crypto_chaquopy", "ssl_chaquopy", "sqlite3_chaquopy", "python" + pythonVer, "chaquopy_java"}) {
             System.loadLibrary(lib);
+        }
+    }
+
+    /**
+     * Android 6 (API 23) does not export lockf64 / preadv64 / pwritev64 — bionic only
+     * added them in Android 7.0 (API 24) — yet the bundled CPython is built for
+     * android-24 and references all three. System.loadLibrary() resolves with
+     * RTLD_NOW, so every undefined symbol must be satisfiable at load time; without
+     * them libpython3.10.so cannot be loaded at all:
+     *
+     *     dlopen failed: cannot locate symbol "lockf64" referenced by ".../base.apk"
+     *
+     * libwebhtv_shim.so supplies them (see app/src/main/cpp/libc_shim.c) and must be
+     * loaded before the loop above: once it is in the global group, its symbols are
+     * visible to everything loaded afterwards.
+     *
+     * 64-bit ABIs do not need it (off_t is already 64-bit there, so CPython calls
+     * lockf/preadv directly), but the library is built for every ABI so this is
+     * harmless. Failure is not fatal here — PyLoader degrades to "no Python spiders".
+     */
+    private void loadLibcShim() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) return;
+        try {
+            System.loadLibrary("webhtv_shim");
+            SpiderDebug.log("chaquo", "libc shim loaded (lockf64/preadv64/pwritev64)");
+        } catch (Throwable e) {
+            SpiderDebug.log("chaquo", "libc shim unavailable, python may fail to load");
+            SpiderDebug.log("chaquo", e);
         }
     }
 }

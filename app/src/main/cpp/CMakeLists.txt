@@ -1,7 +1,31 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(exo_dovi_renderer LANGUAGES CXX)
+# C is enabled for libc_shim.c; everything else here is C++.
+project(exo_dovi_renderer LANGUAGES C CXX)
 
+# ---------------------------------------------------------------------------
+# webhtv_shim — bionic compatibility shim for 32-bit Android 6 (API 23).
+#
+# Supplies lockf64 / preadv64 / pwritev64, which Chaquopy's libpython3.10.so needs
+# (it is built for android-24) but Android 6's bionic does not export. Loaded from
+# chaquo/src/main/java/com/fongmi/chaquo/Platform.java before Chaquopy's own libs.
+# See libc_shim.c for the full rationale.
+#
+# Built for every ABI on purpose: on arm64 nothing references those symbols, so the
+# extra definitions are inert, and it keeps System.loadLibrary("webhtv_shim") valid
+# regardless of ABI. It is only *loaded* on API < 24.
+# ---------------------------------------------------------------------------
+add_library(webhtv_shim SHARED libc_shim.c)
+
+target_compile_options(webhtv_shim PRIVATE -Wall -Wextra)
+target_link_options(webhtv_shim PRIVATE
+        -Wl,--no-undefined
+        "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/libc_shim.map")
+# libc is linked implicitly by the NDK toolchain; --no-undefined is satisfied by it.
+
+# ---------------------------------------------------------------------------
+# exo_dovi_renderer
+# ---------------------------------------------------------------------------
 add_library(exo_dovi_renderer SHARED exo_dovi_renderer.cpp)
 
 set(EXO_DV5_NATIVE_ROOT

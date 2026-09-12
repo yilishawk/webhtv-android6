@@ -1,0 +1,19 @@
+/*
+ * Export the three symbols added in Android 7.0 (API 24) that the bundled CPython
+ * needs, under the same version node bionic uses for them.
+ *
+ * libpython3.10.so carries versioned references such as `lockf64@LIBC_N`, where
+ * LIBC_N is the node bionic assigns to symbols introduced in Android N. Declaring the
+ * node here makes the reference resolve by name against this shim on Android 6, where
+ * libc.so has no such node at all.
+ *
+ * `local: *` keeps the rest of the library private so we export exactly what is needed.
+ */
+LIBC_N {
+  global:
+    lockf64;
+    preadv64;
+    pwritev64;
+  local:
+    *;
+};

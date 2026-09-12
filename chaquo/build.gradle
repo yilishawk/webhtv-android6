@@ -9,9 +9,16 @@ android {
     compileSdk libs.versions.compileSdk.get().toInteger()
 
     defaultConfig {
-        // Chaquopy 17 requires minSdk >= 24. The app itself keeps minSdk 23 (Android 6)
-        // and overrides this library's minSdk via tools:overrideLibrary, so Python
-        // spiders are simply unavailable on API 23 while the rest of the app still runs.
+        // Chaquopy 17 requires minSdk >= 24, and that is a real runtime dependency, not
+        // a formality: on 32-bit ABIs libpython3.10.so is built for android-24 and
+        // references lockf64 / preadv64 / pwritev64, which Android 6's bionic does not
+        // export. The app keeps minSdk 23 and overrides this library's minSdk via
+        // tools:overrideLibrary, which only silences the *build-time* check.
+        //
+        // The missing symbols are supplied at runtime by libwebhtv_shim.so
+        // (app/src/main/cpp/libc_shim.c), loaded from Platform#loadLibcShim. If that
+        // still fails on some device, PyLoader degrades to "no Python spiders" rather
+        // than taking the whole loader down.
         minSdk 24
         targetSdk libs.versions.targetSdk.get().toInteger()
         python {
