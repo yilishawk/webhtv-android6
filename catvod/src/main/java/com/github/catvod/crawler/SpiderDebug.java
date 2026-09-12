@@ -44,8 +44,22 @@ public class SpiderDebug {
         if (!DebugLogStore.isEnabled()) return;
         StringWriter writer = new StringWriter();
         th.printStackTrace(new PrintWriter(writer));
-        Logger.t(tag).e(writer.toString());
-        DebugLogStore.add(tag, withSpider(writer.toString()));
+        String text = writer.toString();
+        Logger.t(tag).e(text);
+        DebugLogStore.add(tag, withSpider(text));
+        // The in-app log viewer's summary/export view keeps only the first line of
+        // a multi-line entry, which hides the stack trace. Store a flattened copy
+        // so the cause is visible without logcat.
+        String flat = flatten(text);
+        if (!flat.equals(text)) DebugLogStore.add(tag, withSpider(flat));
+    }
+
+    private static final int FLAT_STACK_MAX = 4000;
+
+    private static String flatten(String text) {
+        if (text == null || text.indexOf('\n') < 0) return text;
+        String flat = text.replace("\r", "").replace("\t", " ").replace("\n", " <- ");
+        return flat.length() <= FLAT_STACK_MAX ? flat : flat.substring(0, FLAT_STACK_MAX) + " ...(truncated)";
     }
 
     public static void log(String msg) {

@@ -38,6 +38,7 @@ import com.fongmi.android.tv.setting.PlaybackPerformanceSetting;
 import com.fongmi.android.tv.setting.PlayerSetting;
 import com.fongmi.android.tv.setting.PreloadSetting;
 import com.fongmi.android.tv.setting.Setting;
+import com.fongmi.android.tv.utils.ResUtil;
 import com.fongmi.android.tv.utils.Util;
 
 import java.text.DecimalFormat;
@@ -835,8 +836,11 @@ public class PlayerOsdController {
     }
 
     private String getDisplayRefreshText() {
-        if (root.getDisplay() == null || root.getDisplay().getRefreshRate() <= 0) return "";
-        return refreshFormat.format(root.getDisplay().getRefreshRate()) + " Hz";
+        // View.getDisplay() is API 30+; ResUtil.getDisplay() falls back to
+        // WindowManager.getDefaultDisplay() below API 30 (Android 6 support).
+        Display display = ResUtil.getDisplay(root.getContext());
+        if (display == null || display.getRefreshRate() <= 0) return "";
+        return refreshFormat.format(display.getRefreshRate()) + " Hz";
     }
 
     private String getDeviceText() {
@@ -879,7 +883,7 @@ public class PlayerOsdController {
     }
 
     private String getDisplayText() {
-        Display display = root.getDisplay();
+        Display display = ResUtil.getDisplay(root.getContext());
         DisplayMetrics metrics = App.get().getResources().getDisplayMetrics();
         String appSize = metrics.widthPixels > 0 && metrics.heightPixels > 0 ? "app " + metrics.widthPixels + "x" + metrics.heightPixels : "";
         String refresh = getDisplayRefreshText();

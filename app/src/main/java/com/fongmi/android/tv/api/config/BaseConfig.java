@@ -13,6 +13,7 @@ import com.fongmi.android.tv.utils.Task;
 import com.fongmi.android.tv.utils.UrlUtil;
 import com.github.catvod.bean.Header;
 import com.github.catvod.bean.Proxy;
+import com.github.catvod.crawler.SpiderDebug;
 import com.github.catvod.net.OkHttp;
 import com.github.catvod.utils.Json;
 import com.google.gson.JsonArray;
@@ -107,6 +108,11 @@ abstract class BaseConfig {
             App.post(callback::success);
         } catch (Throwable e) {
             e.printStackTrace();
+            // The in-app log only receives callback.error(String), which drops the
+            // exception type. Log the Throwable itself so the app log carries the
+            // real class name and stack trace (essential on Android 6 devices
+            // where adb logcat is often unavailable).
+            SpiderDebug.log("startup", e);
             if (isCanceled(e)) return;
             if (taskId.get() != id) return;
             if (TextUtils.isEmpty(config.getUrl())) App.post(() -> callback.error(""));

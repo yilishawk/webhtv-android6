@@ -38,7 +38,10 @@ public class Notify {
     }
 
     public static String getError(int resId, Throwable e) {
-        if (TextUtils.isEmpty(e.getMessage())) return ResUtil.getString(resId);
+        // Always surface the exception type: many failures (e.g.
+        // ExceptionInInitializerError, NullPointerException) carry a null
+        // message, which used to produce a bare "配置取得失败" with no clue.
+        if (TextUtils.isEmpty(e.getMessage())) return ResUtil.getString(resId) + "\n" + e.getClass().getName();
         return ResUtil.getString(resId) + "\n" + e.getMessage();
     }
 

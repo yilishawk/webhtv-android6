@@ -238,7 +238,20 @@ public final class MPVLib {
             SystemClock.sleep(waitMs);
         }
         contextCreationAttempted = true;
-        create(appctx);
+        try {
+            create(appctx);
+        } catch (Throwable e) {
+            // create() can fail before it finishes, e.g. when the bundled libplayer.so
+            // cannot resolve its Java callback class
+            // (com.fongmi.android.tv.player.iso.IsoSessionManager) through JNI FindClass.
+            // Leaving the guard set would make every later attempt report the bogus
+            // "MPV native context creation is already in progress" and hide the real
+            // cause for the whole process lifetime, so release it here.
+            contextCreationAttempted = false;
+            contextCreated = false;
+            Log.e(TAG, "MPV native context creation failed", e);
+            throw e;
+        }
         contextCreated = true;
         return true;
     }

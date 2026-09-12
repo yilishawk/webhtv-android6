@@ -16,6 +16,15 @@ def buildTimestamp = new Date().format('yyyyMMddHHmm', TimeZone.getTimeZone('Asi
 def buildTime = fastRelease ? "fast-${buildTimestamp}" : buildTimestamp
 def releaseTag = (System.getenv('WEBHTV_RELEASE_TAG') ?: '').replace('\\', '\\\\').replace('"', '\\"')
 def apkSuffix = (System.getenv('WEBHTV_APK_SUFFIX') ?: '').replaceAll('[^A-Za-z0-9._-]', '')
+// Optional co-existence build. This appends to the *application id* only; the Java
+// namespace/package (and therefore every class name) is left untouched. That matters
+// because the prebuilt assets/mpv-libs/<abi>/libplayer.so resolves
+// com.fongmi.android.tv.player.iso.IsoSessionManager by name through JNI FindClass,
+// so repackaging tools that rewrite the Java package silently break MPV playback
+// with java.lang.ClassNotFoundException. Use this instead of an APK repackager when
+// the APK has to live next to another FongMi-based build.
+def rawAppIdSuffix = (System.getenv('WEBHTV_APP_ID_SUFFIX') ?: '').trim().replaceAll('[^A-Za-z0-9._-]', '')
+def appIdSuffix = rawAppIdSuffix.isEmpty() || rawAppIdSuffix.startsWith('.') ? rawAppIdSuffix : '.' + rawAppIdSuffix
 
 android {
     namespace = 'com.fongmi.android.tv'
@@ -24,7 +33,7 @@ android {
     ndkVersion "29.0.14206865"
 
     defaultConfig {
-        applicationId "com.fongmi.android.tv"
+        applicationId "com.fongmi.android.tv" + appIdSuffix
         minSdk libs.versions.minSdk.get().toInteger()
         targetSdk libs.versions.targetSdk.get().toInteger()
         versionCode 560

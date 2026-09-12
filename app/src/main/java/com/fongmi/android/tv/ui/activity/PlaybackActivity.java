@@ -399,6 +399,11 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
         String playerText = mService == null ? "none" : player().getPlayerText();
         boolean nativePlayer = mService != null && player().isNativePlayer();
         int targetRender = mService == null ? -1 : getRender();
+        // Activity.getDisplay() is API 30+ and throws NoSuchMethodError on
+        // Android 6/7/8/9/10 (SDK 23-29). ResUtil.getDisplay() routes through
+        // ContextCompat.getDisplayOrDefault(), which falls back to
+        // WindowManager.getDefaultDisplay() below API 30.
+        var display = ResUtil.getDisplay(this);
         String message = "playback " + step
                 + " key=" + getPlaybackKey()
                 + " player=" + playerText
@@ -410,7 +415,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
                 + " content=" + viewSize(content)
                 + " surface=" + surfaceName(surface) + ":" + viewSize(surface)
                 + " holder=" + surfaceHolderSize(surface)
-                + " rotation=" + (getDisplay() == null ? -1 : getDisplay().getRotation())
+                + " rotation=" + (display == null ? -1 : display.getRotation())
                 + " orientation=" + getResources().getConfiguration().orientation;
         Log.d(SIZE_TAG, message);
         if (SpiderDebug.isEnabled()) SpiderDebug.log("surface-size", "%s", message);

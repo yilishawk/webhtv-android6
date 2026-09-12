@@ -35,6 +35,11 @@ on:
         required: false
         default: true
         type: boolean
+      app_id_suffix:
+        description: "Co-existence suffix appended to the application id (e.g. a6 -> com.fongmi.android.tv.a6). Only the Android app id changes; Java class names stay untouched, so the bundled libplayer.so keeps resolving its JNI callback class. Use this instead of repackaging the APK. Blank = com.fongmi.android.tv"
+        required: false
+        default: a6
+        type: string
 
 permissions:
   contents: write
@@ -112,6 +117,12 @@ jobs:
             TAG_DEFAULT="v${VERSION_NAME}-$(date +%Y%m%d%H%M)"
             TAG_EXPECT="v${VERSION_NAME}-yyyyMMddHHmm"
           fi
+          # Keep the APK file names distinct when a co-existence suffix is used, so a
+          # release does not ship two identically named but differently signed apps.
+          APP_ID_SUFFIX="$(printf '%s' '${{ inputs.app_id_suffix }}' | tr -cd 'A-Za-z0-9._-')"
+          if [ -n "$APP_ID_SUFFIX" ]; then
+            APK_SUFFIX="${APK_SUFFIX}-${APP_ID_SUFFIX#.}"
+          fi
           TAG="${{ inputs.release_tag }}"
           if [ -z "$TAG" ]; then
             TAG="$TAG_DEFAULT"
@@ -166,6 +177,7 @@ jobs:
         env:
           WEBHTV_RELEASE_TAG: ${{ steps.meta.outputs.tag }}
           WEBHTV_APK_SUFFIX: ${{ steps.meta.outputs.apk_suffix }}
+          WEBHTV_APP_ID_SUFFIX: ${{ inputs.app_id_suffix }}
         run: |
           chmod +x ./gradlew
           rm -rf Release/apk
