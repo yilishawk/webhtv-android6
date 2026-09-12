@@ -1,0 +1,19 @@
+WebHomeTV Android 6 + Spider Log build status
+
+Source modifications completed:
+- minSdk 24 -> 23
+- androidx.webkit 1.16.0 -> 1.15.0
+- Android 6 guards for LocaleList, stopForeground, network callbacks, PiP
+- Android 6 disables Thunder / TVBus extractor registration
+- AAR manifests for hook/thunder/tvbus adjusted from minSdk 24 to 23
+- Added Spider-specific debug context and /spider/log endpoints
+
+Static verification: PASSED (verify_android6_spiderlog.sh)
+
+APK build attempt:
+./gradlew assembleMobile_arm64_v8aRelease --no-daemon
+
+Result: NOT COMPLETED in this execution environment.
+Reason: Gradle 9.5.1 distribution was not available locally and the environment could not resolve services.gradle.org (UnknownHostException).
+
+Therefore this package does NOT contain a falsely claimed/tested APK. Build it in an Android/Gradle environment with the required SDK and Maven dependencies.

@@ -1,0 +1,7 @@
+[
+{
+  "directory": "C:/Users/Administrator/Desktop/webhtv-android6-spiderlog/webhtv-main/app/.cxx/RelWithDebInfo/4u404l4b/arm64-v8a",
+  "command": "F:\\SDK\\ndk\\29.0.14206865\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=aarch64-none-linux-android26 --sysroot=F:/SDK/ndk/29.0.14206865/toolchains/llvm/prebuilt/windows-x86_64/sysroot -DPL_HAVE_PTHREAD -DPL_STATIC -DPTHREAD_HAS_SETCLOCK -Dexo_dovi_renderer_EXPORTS -IC:/Users/Administrator/Desktop/webhtv-android6-spiderlog/webhtv-main/app/src/main/cpp/../../../../third_party/exo-dv5-native/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -Wall -Wextra -Werror=return-type -O2 -g -DNDEBUG -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles\\exo_dovi_renderer.dir\\exo_dovi_renderer.cpp.o -c C:\\Users\\Administrator\\Desktop\\webhtv-android6-spiderlog\\webhtv-main\\app\\src\\main\\cpp\\exo_dovi_renderer.cpp",
+  "file": "C:\\Users\\Administrator\\Desktop\\webhtv-android6-spiderlog\\webhtv-main\\app\\src\\main\\cpp\\exo_dovi_renderer.cpp"
+}
+]

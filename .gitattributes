@@ -1,0 +1,27 @@
+# 换行符规范化
+# CI 在 Linux 上执行 ./gradlew 和 bash scripts/*.sh，如果这些文件带 CRLF
+# 会出现 "/usr/bin/env: 'sh\r': No such file or directory" 而构建失败。
+* text=auto
+
+*.sh      text eol=lf
+gradlew   text eol=lf
+*.bat     text eol=crlf
+
+# 二进制资源，禁止任何换行符转换
+*.so       binary
+*.aar      binary
+*.jar      binary
+*.apk      binary
+*.aab      binary
+*.jks      binary
+*.keystore binary
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.webp     binary
+*.gif      binary
+*.ttf      binary
+*.otf      binary
+*.zip      binary
+*.mp4      binary
+*.m4a      binary
