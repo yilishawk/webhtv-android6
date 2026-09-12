@@ -190,8 +190,16 @@ public class Platform extends Python.Platform {
      *     dlopen failed: cannot locate symbol "lockf64" referenced by ".../base.apk"
      *
      * libwebhtv_shim.so supplies them (see app/src/main/cpp/libc_shim.c) and must be
-     * loaded before the loop above: once it is in the global group, its symbols are
-     * visible to everything loaded afterwards.
+     * loaded before the loop above.
+     *
+     * Load order is not sufficient on its own. libpython3.10.so has no DT_NEEDED entry
+     * for us — it just has an undefined lockf64@LIBC_N that it expects libc to provide
+     * — so it can only find ours if we are in the *global* lookup scope. A plain
+     * dlopen() defaults to RTLD_LOCAL, which would put us in a local group only. We do
+     * not rely on whatever flags System.loadLibrary() happens to pass: the library is
+     * linked with -Wl,-z,global, so its DT_FLAGS_1 carries DF_1_GLOBAL, and bionic adds
+     * any freshly loaded library with that bit to the global group of every namespace.
+     * That makes the promotion deterministic on every Android version.
      *
      * 64-bit ABIs do not need it (off_t is already 64-bit there, so CPython calls
      * lockf/preadv directly), but the library is built for every ABI so this is

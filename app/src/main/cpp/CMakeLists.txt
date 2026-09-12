@@ -20,6 +20,31 @@ add_library(webhtv_shim SHARED libc_shim.c)
 target_compile_options(webhtv_shim PRIVATE -Wall -Wextra)
 target_link_options(webhtv_shim PRIVATE
         -Wl,--no-undefined
+        # Stamp DT_FLAGS_1 | DF_1_GLOBAL into the .so.
+        #
+        # libpython3.10.so does NOT list us in its DT_NEEDED — it just has an
+        # undefined lockf64@LIBC_N that it expects libc to provide. So it can only
+        # find ours if this library is in the *global* scope at the time libpython
+        # is relocated. bionic's dlopen() resolves symbols against the global group
+        # plus the library's own dependency closure, and RTLD_LOCAL (the default)
+        # puts a freshly dlopen'ed library in a *local* group only.
+        #
+        # Rather than depend on whatever flags System.loadLibrary() happens to pass
+        # (an implementation detail that has changed between releases), mark the
+        # library itself as global. bionic's load_library() reads this tag straight
+        # off the ELF:
+        #
+        #     if (d->d_tag == DT_FLAGS_1) si->set_dt_flags_1(d->d_un.d_val);
+        #
+        # and find_libraries() then puts any not-yet-linked library with that bit set
+        # into the global group of every namespace:
+        #
+        #     if (is_ld_preload || (si->get_dt_flags_1() & DF_1_GLOBAL) != 0) { ... }
+        #
+        # So the promotion happens on load, deterministically, on every Android
+        # version. (Verify with: llvm-readelf -d libwebhtv_shim.so | grep FLAGS_1
+        #  -> should print "NOW GLOBAL".)
+        -Wl,-z,global
         "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/libc_shim.map")
 # libc is linked implicitly by the NDK toolchain; --no-undefined is satisfied by it.
 

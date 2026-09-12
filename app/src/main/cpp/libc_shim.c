@@ -31,6 +31,12 @@
  * chaquo/src/main/java/com/fongmi/chaquo/Platform.java, immediately before its
  * loadNativeLibs() loop.
  *
+ * Load order alone is NOT enough, though. libpython3.10.so does not list us in its
+ * DT_NEEDED, so it can only see our symbols if we are in the *global* scope when it is
+ * relocated — and a plain dlopen() defaults to RTLD_LOCAL. The library therefore marks
+ * itself DF_1_GLOBAL (see -Wl,-z,global in CMakeLists.txt), which bionic honours on
+ * load regardless of the flags the caller passed.
+ *
  * DELIBERATE LIMITATIONS
  * ----------------------
  * - lockf64 only supports offsets/lengths that fit in 32 bits, because it is built on
