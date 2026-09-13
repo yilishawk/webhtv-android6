@@ -1,11 +1,21 @@
 /*
- * Export the three symbols added in Android 7.0 (API 24) that the bundled CPython
- * needs, under the same version node bionic uses for them.
+ * Export the symbols added in Android 7.0 (API 24) that Chaquopy's CPython needs,
+ * under the same version node bionic uses for them.
  *
- * libpython3.10.so carries versioned references such as `lockf64@LIBC_N`, where
+ * The native modules carry versioned references such as `lockf64@LIBC_N`, where
  * LIBC_N is the node bionic assigns to symbols introduced in Android N. Declaring the
- * node here makes the reference resolve by name against this shim on Android 6, where
- * libc.so has no such node at all.
+ * node here makes those references resolve by name against this shim on Android 6,
+ * where libc.so has no such node at all.
+ *
+ * Two groups, both established by auditing every native module in the APK against the
+ * NDK's API-23 stub libraries (apk-check/audit_sym_versions.py):
+ *
+ *   libpython3.10.so           lockf64, preadv64, pwritev64     (32-bit ABI only)
+ *   _socket.cpython-310.so     if_nameindex, if_freenameindex   (both ABIs)
+ *   resource.cpython-310.so    prlimit                          (32-bit ABI only)
+ *
+ * Keeping the node name identical to bionic's is what makes this work: the reference
+ * is (name, version) matched, so a definition under a different node would not count.
  *
  * `local: *` keeps the rest of the library private so we export exactly what is needed.
  */
@@ -14,6 +24,9 @@ LIBC_N {
     lockf64;
     preadv64;
     pwritev64;
+    if_nameindex;
+    if_freenameindex;
+    prlimit;
   local:
     *;
 };
