@@ -1,10 +1,10 @@
 package com.fongmi.android.tv.player.karaoke;
 
-import android.text.Html;
 import android.net.Uri;
 import android.text.TextUtils;
 import android.webkit.CookieManager;
 
+import androidx.core.text.HtmlCompat;
 import androidx.media3.common.MediaMetadata;
 
 import com.fongmi.android.tv.App;
@@ -667,7 +667,8 @@ public class KaraokeTrackRepository {
 
     static String html(String text) {
         if (TextUtils.isEmpty(text)) return "";
-        return Html.fromHtml(text, Html.FROM_HTML_MODE_LEGACY).toString().replace('\u00A0', ' ').replace('\u3000', ' ').trim();
+        // Html.fromHtml(String,int) / FROM_HTML_MODE_LEGACY 是 API 24，Android 6 上会 NoSuchMethodError
+        return HtmlCompat.fromHtml(text, HtmlCompat.FROM_HTML_MODE_LEGACY).toString().replace('\u00A0', ' ').replace('\u3000', ' ').trim();
     }
 
     static String normalizeSearch(String value) {

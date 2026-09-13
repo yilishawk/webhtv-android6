@@ -8,13 +8,13 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
 import android.provider.Settings;
-import android.text.Html;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 
+import androidx.core.text.HtmlCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -126,7 +126,8 @@ public class Util {
     public static String clean(String text) {
         if (!text.contains("<")) return text;
         StringBuilder sb = new StringBuilder();
-        text = Html.fromHtml(text, Html.FROM_HTML_MODE_LEGACY).toString().replace("\u00A0", " ").replace("\u3000", " ");
+        // Html.fromHtml(String,int) / FROM_HTML_MODE_LEGACY 是 API 24，Android 6 上会 NoSuchMethodError
+        text = HtmlCompat.fromHtml(text, HtmlCompat.FROM_HTML_MODE_LEGACY).toString().replace("\u00A0", " ").replace("\u3000", " ");
         for (String line : text.split("\\r?\\n")) sb.append(line.trim()).append("\n");
         return substring(sb.toString()).trim();
     }
