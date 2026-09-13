@@ -1,18 +1,27 @@
 /*
- * Export the symbols added in Android 7.0 (API 24) that Chaquopy's CPython needs,
- * under the same version node bionic uses for them.
+ * Export the symbols added in Android 7.0 (API 24) that the APK's prebuilt native
+ * libraries need, under the same version node bionic uses for them.
  *
- * The native modules carry versioned references such as `lockf64@LIBC_N`, where
- * LIBC_N is the node bionic assigns to symbols introduced in Android N. Declaring the
- * node here makes those references resolve by name against this shim on Android 6,
- * where libc.so has no such node at all.
+ * Those libraries carry versioned references such as `lockf64@LIBC_N`, where LIBC_N is
+ * the node bionic assigns to symbols introduced in Android N. Declaring the node here
+ * makes those references resolve by name against this shim on Android 6, where libc.so
+ * has no such node at all.
  *
- * Two groups, both established by auditing every native module in the APK against the
+ * Three groups, all established by auditing every native library in the APK against the
  * NDK's API-23 stub libraries (apk-check/audit_sym_versions.py):
  *
- *   libpython3.10.so           lockf64, preadv64, pwritev64     (32-bit ABI only)
+ *   libpython3.10.so           lockf64, preadv64, pwritev64     (armeabi-v7a)
+ *                              lockf, preadv, pwritev           (arm64-v8a)
  *   _socket.cpython-310.so     if_nameindex, if_freenameindex   (both ABIs)
  *   resource.cpython-310.so    prlimit                          (32-bit ABI only)
+ *   libmpv.so                  __write_chk, getifaddrs,
+ *                              freeifaddrs                      (both ABIs)
+ *                              fseeko64                         (32-bit ABI only)
+ *
+ * The two name sets for libpython3.10.so are not a typo: all six symbols are API 24
+ * additions, and which one an ABI carries is decided by _FILE_OFFSET_BITS=64, which
+ * redirects lockf/preadv/pwritev to the *64 variants on a 32-bit ABI but not on arm64.
+ * Both sets are exported on both ABIs — the extra definitions are inert.
  *
  * Keeping the node name identical to bionic's is what makes this work: the reference
  * is (name, version) matched, so a definition under a different node would not count.
@@ -21,12 +30,19 @@
  */
 LIBC_N {
   global:
+    lockf;
     lockf64;
+    preadv;
     preadv64;
+    pwritev;
     pwritev64;
     if_nameindex;
     if_freenameindex;
     prlimit;
+    getifaddrs;
+    freeifaddrs;
+    fseeko64;
+    __write_chk;
   local:
     *;
 };

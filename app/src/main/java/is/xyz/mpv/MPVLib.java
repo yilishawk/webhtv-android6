@@ -11,6 +11,8 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
+import com.github.catvod.utils.LibcShim;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -71,6 +73,7 @@ public final class MPVLib {
             String bundleId = getBundleId(app, abi);
             boolean refreshBundle = !bundleId.equals(readMarker(marker));
             for (String lib : LOAD_ORDER) copyLibrary(app.getAssets(), abi, lib, dir, refreshBundle);
+            loadLibcShim();
             for (String lib : LOAD_ORDER) System.load(new File(dir, System.mapLibraryName(lib)).getAbsolutePath());
             loadedAbi = abi;
             loaded = true;
@@ -89,6 +92,22 @@ public final class MPVLib {
 
     public static synchronized Throwable getLoadError() {
         return loadError;
+    }
+
+    /**
+     * libmpv.so is built for android-24, so on Android 6 it needs libwebhtv_shim.so to be
+     * in the global lookup scope before it is relocated: it references __write_chk,
+     * getifaddrs, freeifaddrs (both ABIs) and fseeko64 (32-bit only) under the LIBC_N
+     * version node, none of which Android 6's libc exports, and System.load() resolves
+     * with RTLD_NOW. Without this the first System.load() in ensureLoaded() throws and
+     * MPV silently never becomes available.
+     *
+     * See app/src/main/cpp/libc_shim.c. This is a no-op from API 24 onwards, and it never
+     * throws — a failure leaves MPV unavailable instead of crashing the player.
+     */
+    private static void loadLibcShim() {
+        if (LibcShim.load()) return;
+        Log.w(TAG, "libc shim unavailable; bundled MPV may fail to load on API < 24", LibcShim.getError());
     }
 
     public static synchronized String getLoadedAbi() {

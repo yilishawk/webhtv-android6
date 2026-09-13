@@ -9,6 +9,7 @@ import com.chaquo.python.Python;
 import com.chaquo.python.internal.Common;
 import com.github.catvod.Init;
 import com.github.catvod.crawler.SpiderDebug;
+import com.github.catvod.utils.LibcShim;
 
 import org.jetbrains.annotations.NotNull;
 import org.json.JSONException;
@@ -202,6 +203,8 @@ public class Platform extends Python.Platform {
      *       referenced by ".../stdlib-armeabi-v7a/_socket.cpython-310.so"
      *
      * libwebhtv_shim.so supplies all of them and must be loaded before the loop above.
+     * It also has to be loaded before MPV's libraries, which is why the loading itself
+     * lives in com.github.catvod.utils.LibcShim and is called from MPVLib as well.
      *
      * Load order is not sufficient on its own. None of those modules has a DT_NEEDED
      * entry for us — they just carry undefined references under the LIBC_N version node
@@ -217,13 +220,11 @@ public class Platform extends Python.Platform {
      */
     private void loadLibcShim() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) return;
-        try {
-            System.loadLibrary("webhtv_shim");
-            SpiderDebug.log("chaquo", "libc shim loaded "
-                    + "(lockf64/preadv64/pwritev64/if_nameindex/if_freenameindex/prlimit)");
-        } catch (Throwable e) {
+        if (LibcShim.load()) {
+            SpiderDebug.log("chaquo", "libc shim loaded (" + LibcShim.SYMBOLS + ")");
+        } else {
             SpiderDebug.log("chaquo", "libc shim unavailable, python may fail to load");
-            SpiderDebug.log("chaquo", e);
+            SpiderDebug.log("chaquo", LibcShim.getError());
         }
     }
 }

@@ -4,15 +4,23 @@ cmake_minimum_required(VERSION 3.22.1)
 project(exo_dovi_renderer LANGUAGES C CXX)
 
 # ---------------------------------------------------------------------------
-# webhtv_shim — bionic compatibility shim for 32-bit Android 6 (API 23).
+# webhtv_shim — bionic compatibility shim for Android 6 (API 23).
 #
-# Supplies lockf64 / preadv64 / pwritev64, which Chaquopy's libpython3.10.so needs
-# (it is built for android-24) but Android 6's bionic does not export. Loaded from
-# chaquo/src/main/java/com/fongmi/chaquo/Platform.java before Chaquopy's own libs.
-# See libc_shim.c for the full rationale.
+# Supplies the 13 bionic symbols that were added in Android 7.0 but are referenced by
+# prebuilt native libraries in this APK. Android 6's libc exports none of them, and
+# System.load()/loadLibrary() resolve with RTLD_NOW, so any one of them missing makes
+# the whole dlopen() fail. Two consumers:
 #
-# Built for every ABI on purpose: on arm64 nothing references those symbols, so the
-# extra definitions are inert, and it keeps System.loadLibrary("webhtv_shim") valid
+#   Chaquopy's CPython   lockf/lockf64, preadv/preadv64, pwritev/pwritev64,
+#                        if_nameindex, if_freenameindex, prlimit
+#   the bundled MPV      __write_chk, getifaddrs, freeifaddrs, fseeko64
+#
+# Loaded by com.github.catvod.utils.LibcShim, which both Platform (Chaquopy) and
+# MPVLib call before loading their own libraries.
+# See libc_shim.c for the full rationale, including which ABI needs which name.
+#
+# Built for every ABI on purpose: each ABI needs only a subset, so the extra
+# definitions are inert, and it keeps System.loadLibrary("webhtv_shim") valid
 # regardless of ABI. It is only *loaded* on API < 24.
 # ---------------------------------------------------------------------------
 add_library(webhtv_shim SHARED libc_shim.c)
