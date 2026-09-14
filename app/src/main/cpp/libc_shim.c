@@ -13,7 +13,7 @@
  *     dlopen failed: cannot locate symbol "lockf64" referenced by ".../base.apk"
  *
  * The affected symbols were found by auditing every native library in the APK against
- * the NDK's API-23 stub libraries (apk-check/audit_sym_versions.py). Three groups:
+ * the NDK's API-23 stub libraries (apk-check/audit_sym_versions.py). Four groups:
  *
  *   1) libpython3.10.so, both ABIs, under two different sets of names:
  *
@@ -56,15 +56,35 @@
  *      This group fails silently: MPVLib caches the failure and MPV simply never
  *      becomes available, so playback dies with no crash and nothing in the app log.
  *
+ *   4) the MPV codec stack — libmvcodec.so, libmvfilter.so, libmvformat.so; 32-bit only:
+ *
+ *          __aeabi_memcpy, __aeabi_memmove, __aeabi_memset, __aeabi_memclr
+ *          and their 4- and 8-suffixed forms
+ *
+ *      A different kind of reference from groups 1-3. These are ARM EABI runtime helpers
+ *      that a compiler normally folds into the calling library's *private* symbol table
+ *      out of libgcc / compiler-rt, so they never reach the dynamic table at all. Linked
+ *      against an android-24+ sysroot, the linker instead found libc's exported
+ *      @@LIBC_N copies and bound the calls to those — which is what makes them dynamic
+ *      *and* versioned. Other libraries in the same bundle reference __aeabi_* too
+ *      (libc++_shared.so carries eight) but without a version node, so Android 6's
+ *      unversioned exports satisfy them, and only these three fail.
+ *
+ *      They load before the player: mvcodec is 5th in MPVLib's LOAD_ORDER and mpv is 9th,
+ *      so the failure surfaces as libmvcodec.so rather than as libmpv.so. aarch64 has no
+ *      __aeabi_* symbols at any API level, so these definitions are inert there.
+ *
  * Because the group-1 failure happened inside BaseLoader's static initialiser, it used
  * to take the whole config loader down with it.
  *
  * WHAT THIS DOES
  * --------------
- * Implements all of them on top of primitives Android 6 does have (fcntl, lseek64,
- * fseeko, readv, writev, prlimit64, SIOCGIFCONF) and exports them under the LIBC_N
- * version node via libc_shim.map, so the versioned references resolve. The list is
- * complete for the APK as built; if a future Chaquopy upgrade or MPV refresh adds
+ * Implements them on top of primitives Android 6 does have (fcntl, lseek64, fseeko,
+ * readv, writev, prlimit64, SIOCGIFCONF) and exports them under the LIBC_N version node
+ * via libc_shim.map, so the versioned references resolve. Group 4 is the exception: it
+ * deliberately references no libc memory function, for the reason written out beside
+ * those definitions — a forwarder there would call straight back into this file. The list
+ * is complete for the APK as built; if a future Chaquopy upgrade or MPV refresh adds
  * native libraries, re-run apk-check/audit_sym_versions.py rather than guessing.
  *
  * Load order matters: this library must be loaded *before* the libraries that need it.
@@ -600,3 +620,80 @@ ssize_t __write_chk(int fd, const void *buf, size_t count, size_t buf_size) {
     }
     return shim_write_real(fd, buf, count);
 }
+
+/* ------------------------------------------------------------------ */
+/* __aeabi_mem* — ARM EABI memory helpers (group 4, 32-bit only)       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * These four are written out here instead of being forwarded to libc, and that is a
+ * deliberate departure from every other group in this file.
+ *
+ * The reason is a trap specific to ARM, and it bit an earlier revision of this file.
+ * clang lowers a call to a function named memcpy, memmove or memset into a call to the
+ * matching __aeabi_* name — which is exactly the name being defined here. A forwarder
+ * therefore ends up referencing itself. That is not a theory: the previous revision
+ * emitted, inside __aeabi_memset,
+ *
+ *     bl <PLT slot for __aeabi_memset>
+ *
+ * The only reason it would not have recursed is that bionic's own __aeabi_memset happens
+ * to be found first in the global scope, so the PLT slot resolves to the platform's copy
+ * rather than to ours. "Happens to" is not a property worth depending on, and which copy a
+ * symbol resolves to is the very question this file exists to stop asking. The fix is to
+ * not touch libc's memory functions from here at all.
+ *
+ * CMake compiles this file with -fno-builtin-memcpy/-memmove/-memset for the same reason:
+ * without them LLVM's loop-idiom pass recognises the byte loops below and rewrites them
+ * into memcpy, which on ARM is __aeabi_memcpy — us again. With the flags LLVM still
+ * vectorises the loops itself, so nothing is given up.
+ *
+ * Byte-at-a-time is the right size for this job: a compiler emits __aeabi_memcpy for
+ * struct assignment and for block moves whose size it does not know at compile time, i.e.
+ * the small end of the range, while the bulk paths inside these libraries call memcpy
+ * directly, which Android 6 does export.
+ */
+
+void __aeabi_memcpy(void *dest, const void *src, size_t n) {
+    unsigned char *d = (unsigned char *)dest;
+    const unsigned char *s = (const unsigned char *)src;
+    while (n-- != 0) *d++ = *s++;
+}
+
+void __aeabi_memmove(void *dest, const void *src, size_t n) {
+    unsigned char *d = (unsigned char *)dest;
+    const unsigned char *s = (const unsigned char *)src;
+    if (d <= s) {
+        while (n-- != 0) *d++ = *s++;
+    } else {
+        /* Overlapping, and dest sits above src: copy from the top down. */
+        d += n;
+        s += n;
+        while (n-- != 0) *--d = *--s;
+    }
+}
+
+/* Size before byte value — the reverse of memset(dest, byte, size). */
+void __aeabi_memset(void *dest, size_t n, int c) {
+    unsigned char *d = (unsigned char *)dest;
+    while (n-- != 0) *d++ = (unsigned char)c;
+}
+
+void __aeabi_memclr(void *dest, size_t n) {
+    unsigned char *d = (unsigned char *)dest;
+    while (n-- != 0) *d++ = 0;
+}
+
+/*
+ * The 4- and 8-suffixed forms differ only in the alignment the caller promises, which none
+ * of the four implementations above care about. Making them true aliases rather than
+ * wrappers keeps them off the PLT entirely.
+ */
+void __aeabi_memcpy4(void *dest, const void *src, size_t n) __attribute__((alias("__aeabi_memcpy")));
+void __aeabi_memcpy8(void *dest, const void *src, size_t n) __attribute__((alias("__aeabi_memcpy")));
+void __aeabi_memmove4(void *dest, const void *src, size_t n) __attribute__((alias("__aeabi_memmove")));
+void __aeabi_memmove8(void *dest, const void *src, size_t n) __attribute__((alias("__aeabi_memmove")));
+void __aeabi_memset4(void *dest, size_t n, int c) __attribute__((alias("__aeabi_memset")));
+void __aeabi_memset8(void *dest, size_t n, int c) __attribute__((alias("__aeabi_memset")));
+void __aeabi_memclr4(void *dest, size_t n) __attribute__((alias("__aeabi_memclr")));
+void __aeabi_memclr8(void *dest, size_t n) __attribute__((alias("__aeabi_memclr")));

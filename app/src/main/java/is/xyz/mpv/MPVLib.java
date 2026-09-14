@@ -42,6 +42,23 @@ public final class MPVLib {
             "player"
     };
 
+    /**
+     * A stub libvulkan.so, shipped inside the same asset bundle.
+     *
+     * libmpv.so is built with libplacebo's Vulkan backend enabled and names libvulkan.so in
+     * its DT_NEEDED, but Vulkan only exists from API 24 onwards — neither the NDK's API-23
+     * stub libraries nor an Android 6 device has a libvulkan.so. The loader fails with
+     * `library "libvulkan.so" not found` before it resolves a single symbol, which is why
+     * the libc shim cannot help here: a shim supplies symbols, not files.
+     *
+     * Note where it is kept — the asset bundle, not lib/<abi>/. A library under lib/ joins
+     * the app's native-library search path, so on a device that does have Vulkan it would
+     * shadow the system's real libvulkan.so for the whole app and break Vulkan there.
+     *
+     * See app/src/main/cpp/vulkan_stub.c.
+     */
+    private static final String VULKAN_STUB = "vulkan";
+
     private static final List<EventObserver> OBSERVERS = new ArrayList<>();
     private static final List<LogObserver> LOG_OBSERVERS = new ArrayList<>();
     private static boolean loaded;
@@ -74,6 +91,7 @@ public final class MPVLib {
             boolean refreshBundle = !bundleId.equals(readMarker(marker));
             for (String lib : LOAD_ORDER) copyLibrary(app.getAssets(), abi, lib, dir, refreshBundle);
             loadLibcShim();
+            preloadVulkanStub(app.getAssets(), abi, dir, refreshBundle);
             for (String lib : LOAD_ORDER) System.load(new File(dir, System.mapLibraryName(lib)).getAbsolutePath());
             loadedAbi = abi;
             loaded = true;
@@ -95,12 +113,15 @@ public final class MPVLib {
     }
 
     /**
-     * libmpv.so is built for android-24, so on Android 6 it needs libwebhtv_shim.so to be
-     * in the global lookup scope before it is relocated: it references __write_chk,
-     * getifaddrs, freeifaddrs (both ABIs) and fseeko64 (32-bit only) under the LIBC_N
-     * version node, none of which Android 6's libc exports, and System.load() resolves
-     * with RTLD_NOW. Without this the first System.load() in ensureLoaded() throws and
-     * MPV silently never becomes available.
+     * libmpv.so and its codec stack are built for android-24, so on Android 6 they need
+     * libwebhtv_shim.so to be in the global lookup scope before they are relocated. The
+     * player references __write_chk, getifaddrs, freeifaddrs (both ABIs) and fseeko64
+     * (32-bit only) under the LIBC_N version node; the codec libraries it loads first —
+     * libmvcodec, libmvfilter, libmvformat — reference the ARM EABI memory helpers
+     * __aeabi_memcpy/memmove/memset/memclr and their 4- and 8-suffixed forms (32-bit
+     * only). Android 6's libc exports none of them, and System.load() resolves with
+     * RTLD_NOW, so without this the first System.load() in ensureLoaded() throws and MPV
+     * silently never becomes available.
      *
      * See app/src/main/cpp/libc_shim.c. This is a no-op from API 24 onwards, and it never
      * throws — a failure leaves MPV unavailable instead of crashing the player.
@@ -108,6 +129,27 @@ public final class MPVLib {
     private static void loadLibcShim() {
         if (LibcShim.load()) return;
         Log.w(TAG, "libc shim unavailable; bundled MPV may fail to load on API < 24", LibcShim.getError());
+    }
+
+    /**
+     * Supplies libvulkan.so below API 24, and only below API 24.
+     *
+     * libmpv.so names libvulkan.so in its DT_NEEDED, and Vulkan did not exist before
+     * Android 7.0 — not in the NDK's API-23 stub libraries, and not on the platform. The
+     * loader fails with `library "libvulkan.so" not found` before resolving any symbol, so
+     * the file itself has to exist; this is the one failure a symbol shim cannot fix.
+     *
+     * Because libmpv.so declares it as a dependency, bionic resolves it out of that
+     * dependency closure, which is why loading it here by absolute path is enough — the
+     * same mechanism by which libmvcodec.so finds its sibling libmwresample.so.
+     *
+     * Deliberately skipped from API 24 onwards: there the platform's own libvulkan.so is
+     * the real one, and preloading this stub would shadow it for the whole app.
+     */
+    private static void preloadVulkanStub(AssetManager assets, String abi, File dir, boolean refreshBundle) throws IOException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) return;
+        copyLibrary(assets, abi, VULKAN_STUB, dir, refreshBundle);
+        System.load(new File(dir, System.mapLibraryName(VULKAN_STUB)).getAbsolutePath());
     }
 
     public static synchronized String getLoadedAbi() {

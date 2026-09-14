@@ -7,7 +7,7 @@
  * makes those references resolve by name against this shim on Android 6, where libc.so
  * has no such node at all.
  *
- * Three groups, all established by auditing every native library in the APK against the
+ * Four groups, all established by auditing every native library in the APK against the
  * NDK's API-23 stub libraries (apk-check/audit_sym_versions.py):
  *
  *   libpython3.10.so           lockf64, preadv64, pwritev64     (armeabi-v7a)
@@ -17,6 +17,10 @@
  *   libmpv.so                  __write_chk, getifaddrs,
  *                              freeifaddrs                      (both ABIs)
  *                              fseeko64                         (32-bit ABI only)
+ *   libmvcodec.so,             __aeabi_memcpy, __aeabi_memmove,
+ *   libmvfilter.so,            __aeabi_memset, __aeabi_memclr
+ *   libmvformat.so             and their 4- and 8-suffixed forms
+ *                                                              (32-bit ABI only)
  *
  * The two name sets for libpython3.10.so are not a typo: all six symbols are API 24
  * additions, and which one an ABI carries is decided by _FILE_OFFSET_BITS=64, which
@@ -43,6 +47,18 @@ LIBC_N {
     freeifaddrs;
     fseeko64;
     __write_chk;
+    __aeabi_memcpy;
+    __aeabi_memcpy4;
+    __aeabi_memcpy8;
+    __aeabi_memmove;
+    __aeabi_memmove4;
+    __aeabi_memmove8;
+    __aeabi_memset;
+    __aeabi_memset4;
+    __aeabi_memset8;
+    __aeabi_memclr;
+    __aeabi_memclr4;
+    __aeabi_memclr8;
   local:
     *;
 };

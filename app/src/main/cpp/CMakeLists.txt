@@ -6,14 +6,16 @@ project(exo_dovi_renderer LANGUAGES C CXX)
 # ---------------------------------------------------------------------------
 # webhtv_shim — bionic compatibility shim for Android 6 (API 23).
 #
-# Supplies the 13 bionic symbols that were added in Android 7.0 but are referenced by
+# Supplies the 25 bionic symbols that were added in Android 7.0 but are referenced by
 # prebuilt native libraries in this APK. Android 6's libc exports none of them, and
 # System.load()/loadLibrary() resolve with RTLD_NOW, so any one of them missing makes
-# the whole dlopen() fail. Two consumers:
+# the whole dlopen() fail. Three consumers:
 #
 #   Chaquopy's CPython   lockf/lockf64, preadv/preadv64, pwritev/pwritev64,
 #                        if_nameindex, if_freenameindex, prlimit
 #   the bundled MPV      __write_chk, getifaddrs, freeifaddrs, fseeko64
+#   the MPV codec stack  __aeabi_memcpy/memmove/memset/memclr and their 4- and
+#                        8-suffixed forms (32-bit only; see group 4 in libc_shim.c)
 #
 # Loaded by com.github.catvod.utils.LibcShim, which both Platform (Chaquopy) and
 # MPVLib call before loading their own libraries.
@@ -25,7 +27,15 @@ project(exo_dovi_renderer LANGUAGES C CXX)
 # ---------------------------------------------------------------------------
 add_library(webhtv_shim SHARED libc_shim.c)
 
-target_compile_options(webhtv_shim PRIVATE -Wall -Wextra)
+target_compile_options(webhtv_shim PRIVATE
+        -Wall -Wextra
+        # Group 4 (__aeabi_mem*) implements its loops in C and must NOT have them
+        # recognised as calls to memcpy/memmove/memset: on ARM clang lowers such a call to
+        # the matching __aeabi_* name, which is the name being defined — the forwarder
+        # would call itself. See the comment beside those definitions in libc_shim.c.
+        -fno-builtin-memcpy
+        -fno-builtin-memmove
+        -fno-builtin-memset)
 target_link_options(webhtv_shim PRIVATE
         -Wl,--no-undefined
         # Stamp DT_FLAGS_1 | DF_1_GLOBAL into the .so.
@@ -55,6 +65,36 @@ target_link_options(webhtv_shim PRIVATE
         -Wl,-z,global
         "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/libc_shim.map")
 # libc is linked implicitly by the NDK toolchain; --no-undefined is satisfied by it.
+
+# ---------------------------------------------------------------------------
+# vulkan_stub.c is deliberately NOT a target in this file.
+#
+# It builds libvulkan.so, which libmpv.so names in its DT_NEEDED — Vulkan arrived in
+# API 24, so Android 6 has no such library and the loader fails before resolving any
+# symbol. Supplying it means supplying a *file*, which is why the libc shim above cannot
+# help with this one.
+#
+# Every target in this file is packaged by AGP into the APK's lib/<abi>/. That is exactly
+# where this library must NOT go: a library under lib/ joins the app's native-library
+# search path, so on a device that does have Vulkan it would shadow the system's real
+# libvulkan.so for the whole app. It has to ship in the asset bundle instead, so that
+# MPVLib can preload it by absolute path and only below API 24 — see
+# MPVLib.preloadVulkanStub().
+#
+# So the built libvulkan.so is committed alongside the other prebuilt libraries in
+# app/src/<abi>/assets/mpv-libs/<abi>/, exactly as the ten MPV libraries already are, and
+# vulkan_stub.c is kept next to this file as its source of truth. To rebuild after editing
+# it (NDK 29.0.14206865, both ABIs):
+#
+#   NDK=$SDK/ndk/29.0.14206865/toolchains/llvm/prebuilt/windows-x86_64/bin
+#   "$NDK/armv7a-linux-androideabi26-clang" -shared -fPIC -O2 -Wall -Wextra \
+#       -Wl,--no-undefined -o .../mpv-libs/armeabi-v7a/libvulkan.so vulkan_stub.c -llog
+#   "$NDK/aarch64-linux-android26-clang" -shared -fPIC -O2 -Wall -Wextra \
+#       -Wl,--no-undefined -o .../mpv-libs/arm64-v8a/libvulkan.so vulkan_stub.c -llog
+#
+# Then confirm it still exports everything libmpv.so asks for — the 63 vk* entry points,
+# identical on both ABIs — by re-running apk-check/audit_sym_versions.py.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # exo_dovi_renderer
