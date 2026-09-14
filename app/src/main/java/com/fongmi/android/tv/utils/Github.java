@@ -2,11 +2,19 @@ package com.fongmi.android.tv.utils;
 
 public class Github {
 
-    private static final String GITHUB_LATEST = "https://github.com/fish2018/webhtv/releases/latest/download";
-    private static final String GITHUB_RELEASE = "https://github.com/fish2018/webhtv/releases/download";
-    private static final String GITHUB_API = "https://api.github.com/repos/fish2018/webhtv/releases/tags";
-    private static final String GITHUB_RELEASES_API = "https://api.github.com/repos/fish2018/webhtv/releases";
-    private static final String GITHUB_RELEASE_ASSETS_API = "https://api.github.com/repos/fish2018/webhtv/releases/assets";
+    // This is a fork that ships its own builds. The in-app update check MUST look at our own
+    // releases: pointing it at upstream (fish2018/webhtv) would offer an APK built for minSdk 24
+    // that carries none of the Android 6 patches, and Update.hasUpdate() compares with "!="
+    // rather than ">", so any upstream bump would be advertised as an update to our users.
+    // Keep every repository reference derived from this one constant.
+    private static final String REPO = "yilishawk/webhtv-android6";
+    private static final String GITHUB_LATEST = "https://github.com/" + REPO + "/releases/latest/download";
+    private static final String GITHUB_RELEASE = "https://github.com/" + REPO + "/releases/download";
+    private static final String GITHUB_API = "https://api.github.com/repos/" + REPO + "/releases/tags";
+    private static final String GITHUB_RELEASES_API = "https://api.github.com/repos/" + REPO + "/releases";
+    private static final String GITHUB_RELEASE_ASSETS_API = "https://api.github.com/repos/" + REPO + "/releases/assets";
+    // Unused: the CNB mirror helpers below have no callers in this fork. Left as-is on purpose
+    // (deleting them is a separate change); do not wire them up without repointing them first.
     private static final String CNB = "https://cnb.cool/fish2035/webhtv-release/-/git/raw/main";
 
     public static String getCnbAsset(String name) {

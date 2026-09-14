@@ -94,7 +94,9 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     }
 
     private String getName() {
-        return BuildConfig.FLAVOR_mode + "-" + BuildConfig.FLAVOR_abi;
+        // Must match the release asset base name the CI workflow publishes:
+        // "${mode}-${abi}${apkSuffix}" — e.g. "leanback-armeabi_v7a-a6".
+        return BuildConfig.FLAVOR_mode + "-" + BuildConfig.FLAVOR_abi + BuildConfig.APK_SUFFIX;
     }
 
     public Updater force() {
@@ -280,8 +282,11 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     }
 
     private String getAssetName(String channel, String ext) {
-        String suffix = Update.CHANNEL_BETA.equals(channel) ? "-beta" : "";
-        return getName() + suffix + "." + ext;
+        // The channel is already baked into this build's APK_SUFFIX (the workflow publishes "-a6"
+        // for stable and "-beta-a6" for beta), so appending another "-beta" here would ask for an
+        // asset name CI never produces. The channel still decides which *release* to read: the
+        // stable path uses /releases/latest, the beta path scans for isBetaRelease().
+        return getName() + "." + ext;
     }
 
     private String getGithubApkUrl(Update update) {

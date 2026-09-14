@@ -40,7 +40,9 @@ import com.github.catvod.crawler.SpiderDebug;
 
 public class SettingEnhanceActivity extends BaseActivity {
 
-    private static final String URL_GITHUB = "https://github.com/fish2018/webhtv";
+    // Points at this fork's own repository. URL_CNB is the *extension* source and stays on
+    // upstream, because that is where the WebHome extension packages are actually published.
+    private static final String URL_GITHUB = "https://github.com/yilishawk/webhtv-android6";
     private static final String URL_CNB = "https://cnb.cool/fish2035/ext";
 
     private ActivitySettingEnhanceBinding mBinding;

@@ -41,6 +41,10 @@ android {
         buildConfigField "String", "BUILD_TIME", "\"${buildTime}\""
         buildConfigField "String", "BUILD_TAG", "\"${releaseTag}\""
         buildConfigField "String", "MEDIA3_VERSION", "\"${libs.versions.media3.get()}\""
+        // The release asset name is "${mode}-${abi}${apkSuffix}" (see outputFileName below), so the
+        // in-app updater has to look for that same name. Without this the updater would request
+        // e.g. "leanback-armeabi_v7a.json" while CI publishes "leanback-armeabi_v7a-a6.json".
+        buildConfigField "String", "APK_SUFFIX", "\"${apkSuffix}\""
         javaCompileOptions {
             annotationProcessorOptions {
                 arguments = ["room.schemaLocation": "$projectDir/schemas".toString(), "eventBusIndex": "com.fongmi.android.tv.event.EventIndex"]
