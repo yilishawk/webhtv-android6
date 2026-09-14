@@ -162,7 +162,7 @@ verify_abi() {
   local directory="$ROOT/app/src/$flavor/assets/mpv-libs/$abi"
   local required name file_path file_info dynamic soname mpv_dynamic
 
-  required="libc++_shared.so libmpv.so libmvcodec.so libmvdevice.so libmvfilter.so libmvformat.so libmvutil.so libmwresample.so libmwscale.so libplayer.so"
+  required="libc++_shared.so libmpv.so libmvcodec.so libmvdevice.so libmvfilter.so libmvformat.so libmvutil.so libmwresample.so libmwscale.so libplayer.so libvulkan.so"
   [ -d "$directory" ] || die "missing asset directory: $directory"
   for name in $required; do
     [ -f "$directory/$name" ] || die "missing $abi asset: $name"
@@ -216,6 +216,15 @@ verify_abi() {
   contains_string "$directory/libmvformat.so" "WebHTV proxy range offset accepted"
   contains_string "$directory/libmvcodec.so" "failing hardware decode so the player can fall back"
   contains_string "$directory/libmpv.so" "No usable fontconfig configuration file found, using fallback."
+
+  # libvulkan.so here is our own "loader with no driver installed" stub, not a real
+  # implementation and not the NDK's placeholder. It exists only so that Android 6
+  # (which has no libvulkan.so at all, Vulkan starts at API 24) can satisfy
+  # libmpv.so's DT_NEEDED entry; MPVLib.preloadVulkanStub() loads it by absolute
+  # path below API 24 only, so devices that do have Vulkan keep using the platform
+  # loader. These assertions fail loudly if someone drops in a different file.
+  contains_string "$directory/libvulkan.so" "vulkan stub touched:"
+  contains_string "$directory/libvulkan.so" "VK_ERROR_INCOMPATIBLE_DRIVER (no driver)"
   if [ -n "$CURL_VERSION" ]; then
     contains_string "$directory/libmpv.so" "libcurl/$CURL_VERSION"
     contains_string "$directory/libmpv.so" "HTTP2"
