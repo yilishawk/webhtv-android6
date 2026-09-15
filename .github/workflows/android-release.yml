@@ -80,6 +80,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # 必须显式覆盖：这个 action 的默认值是 tools platform-tools，而 Google 已经把
+          # 独立的 tools 包从 SDK 仓库里下掉了 —— 实测 repository2-3.xml 的 255 个包里
+          # 没有 tools，sdkmanager 会报 Failed to find package 然后 exit 1。
+          # v4 的默认值同样是 tools platform-tools，所以升级 action 版本修不了这个。
+          # 下面那一步会用 sdkmanager 显式装齐真正需要的包，这里只装 platform-tools 就够。
+          packages: platform-tools
 
       - name: Install Android packages
         run: |
