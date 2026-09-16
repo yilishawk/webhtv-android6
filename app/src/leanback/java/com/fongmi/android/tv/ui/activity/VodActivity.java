@@ -18,6 +18,7 @@ import androidx.viewbinding.ViewBinding;
 import androidx.viewpager.widget.ViewPager;
 
 import com.fongmi.android.tv.App;
+import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.api.config.VodConfig;
 import com.fongmi.android.tv.bean.Class;
 import com.fongmi.android.tv.bean.Result;
@@ -28,17 +29,24 @@ import com.fongmi.android.tv.ui.base.BaseActivity;
 import com.fongmi.android.tv.ui.fragment.FolderFragment;
 import com.fongmi.android.tv.utils.KeyUtil;
 import com.fongmi.android.tv.utils.ResUtil;
+import com.github.catvod.crawler.SpiderDebug;
 
 import org.greenrobot.eventbus.Subscribe;
 import org.greenrobot.eventbus.ThreadMode;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 public class VodActivity extends BaseActivity implements TypeAdapter.OnClickListener {
 
+    private static final String HOME_TYPE_ID = "home";
+
     private ActivityVodBinding mBinding;
     private TypeAdapter mAdapter;
     private View mOldView;
+    private Class mHomeType;
+    private boolean chipReady;
 
     public static void start(Activity activity, Result result) {
         start(activity, VodConfig.get().getHome().getKey(), result);
@@ -66,11 +74,41 @@ public class VodActivity extends BaseActivity implements TypeAdapter.OnClickList
     }
 
     private int getPosition() {
-        return Math.min(getIntent().getIntExtra("position", 0), Math.max(mAdapter.getItemCount() - 1, 0));
+        return Math.min(getIntent().getIntExtra("position", 0), Math.max(getPageCount() - 1, 0));
+    }
+
+    private int getPageCount() {
+        return Math.max(mAdapter.getItemCount() - 1, 0);
+    }
+
+    private Class getHomeType() {
+        if (mHomeType == null) {
+            mHomeType = new Class();
+            mHomeType.setTypeId(HOME_TYPE_ID);
+            mHomeType.setTypeName(ResUtil.getString(R.string.vod_home));
+        }
+        return mHomeType;
+    }
+
+    private boolean isHomeChip(int chipPosition) {
+        return chipPosition == 0;
+    }
+
+    // 「首页」是本页自己合成的占位项，用引用判等，避免与真实分类里可能存在的 id=home 撞车
+    private boolean isHomeChip(Class item) {
+        return item != null && item == mHomeType;
+    }
+
+    private int chipToPage(int chipPosition) {
+        return Math.max(chipPosition - 1, 0);
+    }
+
+    private int pageToChip(int pagePosition) {
+        return pagePosition + 1;
     }
 
     private Class getType() {
-        return mAdapter.get(mBinding.pager.getCurrentItem());
+        return mAdapter.get(Math.min(pageToChip(mBinding.pager.getCurrentItem()), mAdapter.getItemCount() - 1));
     }
 
     private FolderFragment getFragment() {
@@ -94,16 +132,18 @@ public class VodActivity extends BaseActivity implements TypeAdapter.OnClickList
         mBinding.pager.addOnPageChangeListener(new ViewPager.SimpleOnPageChangeListener() {
             @Override
             public void onPageSelected(int position) {
-                mBinding.recycler.setSelectedPosition(position);
+                mBinding.recycler.setSelectedPosition(pageToChip(position));
                 mBinding.recycler.requestFocus();
             }
         });
         mBinding.recycler.addOnChildViewHolderSelectedListener(new OnChildViewHolderSelectedListener() {
             @Override
             public void onChildViewHolderSelected(@NonNull RecyclerView parent, @Nullable RecyclerView.ViewHolder child, int position, int subposition) {
-                onChildSelected(child);
+                onChildSelected(child, position);
             }
         });
+        // 首帧前芯片行的选中态由代码设定，只有用户自己移过来的焦点才该触发返回
+        mBinding.recycler.postOnAnimation(() -> chipReady = true);
     }
 
     private void setRecyclerView() {
@@ -114,26 +154,43 @@ public class VodActivity extends BaseActivity implements TypeAdapter.OnClickList
     }
 
     private void setTypes() {
-        mAdapter.addAll(getResult().getTypes());
+        List<Class> items = new ArrayList<>(getResult().getTypes().size() + 1);
+        items.add(getHomeType());
+        items.addAll(getResult().getTypes());
+        mAdapter.addAll(items);
     }
 
     private void setPager() {
         mBinding.pager.setAdapter(new PageAdapter(getSupportFragmentManager()));
         mBinding.pager.setCurrentItem(getPosition());
-        mBinding.recycler.setSelectedPosition(getPosition());
+        mBinding.recycler.setSelectedPosition(pageToChip(getPosition()));
     }
 
-    private void onChildSelected(@Nullable RecyclerView.ViewHolder child) {
+    private void onChildSelected(@Nullable RecyclerView.ViewHolder child, int position) {
         if (mOldView != null) mOldView.setSelected(false);
         if ((mOldView = child != null ? child.itemView : null) == null) return;
         mOldView.setSelected(true);
-        App.post(mRunnable, 100);
+        if (isHomeChip(position)) {
+            if (chipReady) App.post(mHomeRunnable, 100);
+        } else {
+            App.post(mRunnable, 100);
+        }
     }
 
     private final Runnable mRunnable = new Runnable() {
         @Override
         public void run() {
-            mBinding.pager.setCurrentItem(mBinding.recycler.getSelectedPosition());
+            mBinding.pager.setCurrentItem(chipToPage(mBinding.recycler.getSelectedPosition()));
+        }
+    };
+
+    private final Runnable mHomeRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isFinishing()) return;
+            SpiderDebug.log("home-chip", "vod home chip focused, back to home key=%s", getKey());
+            RefreshEvent.home();
+            finish();
         }
     };
 
@@ -162,11 +219,13 @@ public class VodActivity extends BaseActivity implements TypeAdapter.OnClickList
 
     @Override
     public void onItemClick(Class item) {
+        if (isHomeChip(item)) return;
         updateFilter(item);
     }
 
     @Override
     public void onRefresh(Class item) {
+        if (isHomeChip(item)) return;
         getFragment().onRefresh();
     }
 
@@ -198,13 +257,13 @@ public class VodActivity extends BaseActivity implements TypeAdapter.OnClickList
         @NonNull
         @Override
         public Fragment getItem(int position) {
-            Class type = mAdapter.get(position);
+            Class type = mAdapter.get(pageToChip(position));
             return FolderFragment.newInstance(getKey(), type);
         }
 
         @Override
         public int getCount() {
-            return mAdapter.getItemCount();
+            return getPageCount();
         }
 
         @Override

@@ -86,6 +86,7 @@ import org.greenrobot.eventbus.ThreadMode;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -96,6 +97,11 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private static final String TV_TOOLBAR_HIDDEN = "tv-toolbar-hidden";
     private static final String TV_OVERLAY = "tv-overlay";
     private static final String TV_FULL = "tv-full";
+
+    private static final String HOME_TYPE_ID = "home";
+    private static final int PENDING_NONE = 0;
+    private static final int PENDING_HOME = 1;
+    private static final int PENDING_CATEGORY = 2;
 
     private ActivityHomeBinding mBinding;
     private ArrayObjectAdapter mHistoryAdapter;
@@ -112,7 +118,10 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private String webChromeMode = TV_NORMAL;
     private String webDefaultChromeMode = TV_FULL;
     private boolean webToolbarVisible = true;
-    private boolean loadingHomeCategory;
+    private Class mHomeType;
+    private final List<Object> mHomeRows = new ArrayList<>();
+    private int pendingResult = PENDING_NONE;
+    private boolean previewingCategory;
 
     private Site getHome() {
         return VodConfig.get().getHome();
@@ -189,9 +198,87 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         mBinding.typeRecycler.addOnChildViewHolderSelectedListener(new OnChildViewHolderSelectedListener() {
             @Override
             public void onChildViewHolderSelected(@NonNull RecyclerView parent, @Nullable RecyclerView.ViewHolder child, int position, int subposition) {
-                if (child != null && parent.hasFocus()) updateToolbarVisibility(true);
+                if (child == null || !parent.hasFocus()) return;
+                updateToolbarVisibility(true);
+                onTypeFocused(position);
             }
         });
+    }
+
+    private void onTypeFocused(int position) {
+        if (position <= 0) {
+            App.removeCallbacks(mCategoryRunnable);
+            App.post(mHomeRunnable, 100);
+        } else {
+            App.removeCallbacks(mHomeRunnable);
+            App.post(mCategoryRunnable, 100);
+        }
+    }
+
+    private final Runnable mHomeRunnable = new Runnable() {
+        @Override
+        public void run() {
+            restoreHomeContent();
+        }
+    };
+
+    private final Runnable mCategoryRunnable = new Runnable() {
+        @Override
+        public void run() {
+            int position = mBinding.typeRecycler.getSelectedPosition();
+            if (position <= 0) return;
+            loadCategory(mTypeAdapter.get(position));
+        }
+    };
+
+    private Class getHomeType() {
+        if (mHomeType == null) {
+            mHomeType = new Class();
+            mHomeType.setTypeId(HOME_TYPE_ID);
+            mHomeType.setTypeName(ResUtil.getString(R.string.vod_home));
+        }
+        return mHomeType;
+    }
+
+    // 「首页」是本页自己合成的占位项，用引用判等，避免与真实分类里可能存在的 id=home 撞车
+    private boolean isHomeChip(Class item) {
+        return item != null && item == mHomeType;
+    }
+
+    private void loadCategory(Class type) {
+        if (type == null || type.getTypeId().isEmpty()) return;
+        SpiderDebug.log("home-chip", "home category focus load key=%s tid=%s", getHome().getKey(), type.getTypeId());
+        previewingCategory = true;
+        clearRecommendRows();
+        mAdapter.add("progress");
+        pendingResult = PENDING_CATEGORY;
+        mViewModel.categoryContent(getHome().getKey(), type.getTypeId(), "1", true, new HashMap<>());
+    }
+
+    private void restoreHomeContent() {
+        if (!previewingCategory) return;
+        previewingCategory = false;
+        pendingResult = PENDING_NONE;
+        if (mHomeRows.isEmpty()) {
+            loadHomeContent();
+            return;
+        }
+        SpiderDebug.log("home-chip", "home chip focused, restore cached home rows=%s", mHomeRows.size());
+        clearRecommendRows();
+        mAdapter.addAll(mAdapter.size(), mHomeRows);
+    }
+
+    private void loadHomeContent() {
+        clearRecommendRows();
+        mAdapter.add("progress");
+        pendingResult = PENDING_HOME;
+        mViewModel.homeContent();
+    }
+
+    private void snapshotHomeRows() {
+        mHomeRows.clear();
+        int index = getRecommendIndex();
+        for (int i = index; i < mAdapter.size(); i++) mHomeRows.add(mAdapter.get(i));
     }
 
     private void updateToolbarVisibility(boolean visible) {
@@ -291,20 +378,21 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
 
     private void setViewModel() {
         mViewModel = new ViewModelProvider(this).get(SiteViewModel.class);
-        mViewModel.getResult().observe(this, result -> {
-            boolean categoryResult = isHomeCategoryResult(result);
-            mAdapter.remove("progress");
-            if (!categoryResult) {
-                Cache.clear().put(result);
-                setTypes(mHomeResult = result);
-            }
-            mResult = result;
-            addVideo(result);
-        });
+        mViewModel.getResult().observe(this, this::onResult);
     }
 
-    private boolean isHomeCategoryResult(Result result) {
-        return loadingHomeCategory && result.getTypes().isEmpty();
+    private void onResult(Result result) {
+        if (result == null || pendingResult == PENDING_NONE) return;
+        boolean category = pendingResult == PENDING_CATEGORY;
+        pendingResult = PENDING_NONE;
+        mAdapter.remove("progress");
+        if (!category) {
+            Cache.clear().put(result);
+            setTypes(mHomeResult = result);
+        }
+        mResult = result;
+        addVideo(result, category);
+        if (!previewingCategory && pendingResult == PENDING_NONE) snapshotHomeRows();
     }
 
     private void setAdapter() {
@@ -394,6 +482,8 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
             mBinding.typeRecycler.setVisibility(View.GONE);
             mBinding.recycler.setVisibility(View.GONE);
             mBinding.progressLayout.showContent();
+            previewingCategory = false;
+            pendingResult = PENDING_NONE;
             showWebOverlay();
             return;
         }
@@ -403,9 +493,11 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         mBinding.recycler.setVisibility(View.VISIBLE);
         mResult = Result.empty();
         mHomeResult = Result.empty();
-        loadingHomeCategory = false;
+        previewingCategory = false;
+        mBinding.typeRecycler.setSelectedPosition(0);
         clearRecommendRows();
         mAdapter.add("progress");
+        pendingResult = PENDING_HOME;
         mViewModel.homeContent();
     }
 
@@ -424,20 +516,22 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
             mBinding.typeRecycler.setVisibility(View.GONE);
             return;
         }
-        mTypeAdapter.addAll(result.getTypes());
+        List<Class> items = new ArrayList<>(result.getTypes().size() + 1);
+        items.add(getHomeType());
+        items.addAll(result.getTypes());
+        mTypeAdapter.addAll(items);
         mBinding.typeRecycler.setVisibility(View.VISIBLE);
     }
 
-    private void addVideo(Result result) {
-        if (!loadingHomeCategory && result.getList().isEmpty() && !result.getTypes().isEmpty()) {
+    private void addVideo(Result result, boolean category) {
+        if (!category && result.getList().isEmpty() && !result.getTypes().isEmpty()) {
             Class type = result.getTypes().get(0);
             SpiderDebug.log("home", "home list empty, auto open first category key=%s tid=%s", getHome().getKey(), type.getTypeId());
-            loadingHomeCategory = true;
             mAdapter.add("progress");
-            mViewModel.categoryContent(getHome().getKey(), type.getTypeId(), "1", true, new java.util.HashMap<>());
+            pendingResult = PENDING_CATEGORY;
+            mViewModel.categoryContent(getHome().getKey(), type.getTypeId(), "1", true, new HashMap<>());
             return;
         }
-        loadingHomeCategory = false;
         Style style = result.getStyle(getHome().getStyle());
         if (style.isList()) mAdapter.addAll(mAdapter.size(), result.getList());
         else addGrid(result.getList(), style);
@@ -602,12 +696,17 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
 
     @Override
     public void onItemClick(Class item) {
+        if (isHomeChip(item)) {
+            showDialog();
+            return;
+        }
         Result result = mHomeResult == null || mHomeResult.getTypes().isEmpty() ? mResult : mHomeResult;
-        VodActivity.start(this, getHome().getKey(), result, mTypeAdapter.indexOf(item));
+        VodActivity.start(this, getHome().getKey(), result, mTypeAdapter.indexOf(item) - 1);
     }
 
     @Override
     public void onRefresh(Class item) {
+        if (isHomeChip(item)) return;
         onItemClick(item);
     }
 

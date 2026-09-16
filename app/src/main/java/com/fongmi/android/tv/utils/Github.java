@@ -13,12 +13,14 @@ public class Github {
     private static final String GITHUB_API = "https://api.github.com/repos/" + REPO + "/releases/tags";
     private static final String GITHUB_RELEASES_API = "https://api.github.com/repos/" + REPO + "/releases";
     private static final String GITHUB_RELEASE_ASSETS_API = "https://api.github.com/repos/" + REPO + "/releases/assets";
-    // Unused: the CNB mirror helpers below have no callers in this fork. Left as-is on purpose
-    // (deleting them is a separate change); do not wire them up without repointing them first.
-    private static final String CNB = "https://cnb.cool/fish2035/webhtv-release/-/git/raw/main";
+    // Was "https://cnb.cool/fish2035/webhtv-release/-/git/raw/main" — a third-party release
+    // mirror belonging to someone else. This fork has no CNB mirror of its own, so the mirror
+    // helpers now derive from our own repository. They are still unused (no callers in this
+    // fork), but re-wiring them can no longer reach a stranger's release feed.
+    private static final String CNB = "https://github.com/" + REPO + "/releases/latest/download";
 
     public static String getCnbAsset(String name) {
-        return CNB + "/apk/" + name;
+        return CNB + "/" + name;
     }
 
     public static String getGithubLatestAsset(String name) {
