@@ -231,9 +231,12 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         public void run() {
             int position = mBinding.typeRecycler.getSelectedPosition();
             if (position <= 0) return;
-            // 首页内容还没落地时（适配器里还挂着 progress 占位）不进预览：那时快照会把这个占位一起
-            // 存进去，回到首页后就会卡一行永远不消失的加载条。
-            if (pendingResult != PENDING_NONE) {
+            // 只在「还没进预览」时拦：那时适配器里可能挂着 "progress" 占位（首页内容未落地，或
+            // `首页无列表 → 自动打开首个分类` 那条路），快照会把它一起存进去，回到首页后卡一行永不消失的加载条。
+            // 已经在预览里就不拦了 —— 预览期间适配器是空的（转圈由 progressLayout 负责），快照也已冻结，
+            // 这时放行才能让快速扫芯片时「最后一个焦点」赢：每次 loadCategory 都会让 SiteViewModel
+            // 取消上一个在飞请求并自增代次，陈旧结果根本到不了 onResult（见 SiteViewModel.execute）。
+            if (!previewingCategory && pendingResult != PENDING_NONE) {
                 SpiderDebug.log("home-chip", "preview skipped pending=%s", pendingResult);
                 return;
             }
@@ -284,13 +287,19 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
             mAdapter.addAll(0, mHomeRows);
             mHomeRows = null;
         }
+        // 必须复位：请求还在飞时就把焦点移回「首页」，pendingResult 已归零 ⇒ 结果到达会被 onResult 早退，
+        // 没人再去动 progressLayout，它会永远停在 PROGRESS（recycler INVISIBLE）⇒ 首页内容隐形。
+        mBinding.progressLayout.showContent();
         getHistory();   // 预览期间若历史变过，这里补一次（上面已把 previewingCategory 置回 false）
     }
 
-    // 整页重建（切爬虫/刷新）时丢弃预览状态，不还原快照 —— 快照属于上一份首页数据，已失效
+    // 整页重建（切爬虫/刷新）时丢弃预览状态，不还原快照 —— 快照属于上一份首页数据，已失效。
+    // 同时把 progressLayout 复位到 CONTENT：预览可能把它留在 PROGRESS/EMPTY（那时 recycler 是 INVISIBLE），
+    // 不复位的话整页重建完列表是隐形的，看起来像首页坏了。
     private void dropPreview() {
         previewingCategory = false;
         mHomeRows = null;
+        mBinding.progressLayout.showContent();
     }
 
     private void loadCategory(Class type) {
@@ -298,7 +307,10 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         SpiderDebug.log("home-chip", "preview load key=%s tid=%s", getHome().getKey(), type.getTypeId());
         enterPreview();
         clearContentRows();
-        mAdapter.add("progress");
+        // 用 progressLayout 自带的居中转圈（与分类页 TypeFragment 同一套），不往适配器里塞 "progress" 占位：
+        // 预览期间适配器保持空，往下按就不会误落到一行占位上。它同时把 recycler 置为 INVISIBLE，
+        // 所以必须在 exitPreview()/dropPreview() 里复位（见上面的 showContent()）。
+        mBinding.progressLayout.showProgress();
         pendingResult = PENDING_CATEGORY;
         mViewModel.categoryContent(getHome().getKey(), type.getTypeId(), "1", true, new HashMap<>());
     }
@@ -583,6 +595,16 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         }
         // 预览：内容区里只放分类数据（onResult 已把适配器清空，这里只负责填）
         mAdapter.addAll(0, rows);
+        // 空列表必须给出可见反馈：功能按钮行已经被撤走，这时什么都不显示的话整屏空白，
+        // 看起来像崩了。两种情况会走到这里 —— 分类本身无数据，以及请求超时（SiteViewModel
+        // 的错误分支 postValue(Result.empty())）。showEmpty() 用 progressLayout 自带的
+        // ViewEmptyBinding 居中空态，与分类页 TypeFragment 的行为一致。
+        if (rows.isEmpty()) {
+            SpiderDebug.log("home-chip", "preview empty, show empty view");
+            mBinding.progressLayout.showEmpty();
+        } else {
+            mBinding.progressLayout.showContent();
+        }
     }
 
     private List<ListRow> buildGridRows(List<Vod> items, Style style) {
