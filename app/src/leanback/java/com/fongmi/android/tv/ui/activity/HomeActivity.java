@@ -119,7 +119,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private String webDefaultChromeMode = TV_FULL;
     private boolean webToolbarVisible = true;
     private Class mHomeType;
-    private final List<Object> mHomeRows = new ArrayList<>();
+    private List<Object> mHomeRows;
     private int pendingResult = PENDING_NONE;
     private boolean previewingCategory;
 
@@ -198,7 +198,10 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         mBinding.typeRecycler.addOnChildViewHolderSelectedListener(new OnChildViewHolderSelectedListener() {
             @Override
             public void onChildViewHolderSelected(@NonNull RecyclerView parent, @Nullable RecyclerView.ViewHolder child, int position, int subposition) {
-                if (child == null || !parent.hasFocus()) return;
+                // 这里不能加 parent.hasFocus() 判断：实测它会让整个预览失效（焦点已经落在芯片上时仍为 false），
+                // 而首帧那次 position=0 的选中本来就不需要拦（exitPreview 会自己 return）。
+                if (child == null) return;
+                SpiderDebug.log("home-chip", "type chip selected pos=%s focused=%s", position, parent.hasFocus());
                 updateToolbarVisibility(true);
                 onTypeFocused(position);
             }
@@ -206,6 +209,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     }
 
     private void onTypeFocused(int position) {
+        SpiderDebug.log("home-chip", "onTypeFocused pos=%s previewing=%s", position, previewingCategory);
         if (position <= 0) {
             App.removeCallbacks(mCategoryRunnable);
             App.post(mHomeRunnable, 100);
@@ -218,7 +222,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private final Runnable mHomeRunnable = new Runnable() {
         @Override
         public void run() {
-            restoreHomeContent();
+            exitPreview();
         }
     };
 
@@ -227,6 +231,12 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         public void run() {
             int position = mBinding.typeRecycler.getSelectedPosition();
             if (position <= 0) return;
+            // 首页内容还没落地时（适配器里还挂着 progress 占位）不进预览：那时快照会把这个占位一起
+            // 存进去，回到首页后就会卡一行永远不消失的加载条。
+            if (pendingResult != PENDING_NONE) {
+                SpiderDebug.log("home-chip", "preview skipped pending=%s", pendingResult);
+                return;
+            }
             loadCategory(mTypeAdapter.get(position));
         }
     };
@@ -245,40 +255,52 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         return item != null && item == mHomeType;
     }
 
-    private void loadCategory(Class type) {
-        if (type == null || type.getTypeId().isEmpty()) return;
-        SpiderDebug.log("home-chip", "home category focus load key=%s tid=%s", getHome().getKey(), type.getTypeId());
-        previewingCategory = true;
-        clearRecommendRows();
-        mAdapter.add("progress");
-        pendingResult = PENDING_CATEGORY;
-        mViewModel.categoryContent(getHome().getKey(), type.getTypeId(), "1", true, new HashMap<>());
+    // 预览 = 内容区里只剩该分类的数据行（功能按钮行也一起撤走，让分类数据顶到最上面，一眼可见）。
+    // ⚠️ 预览期间适配器里**没有**「最近观看」/「推荐」标题行，而 getHistoryIndex()/getRecommendIndex()
+    // 是 `indexOf(标题) + 1` 动态算出来的 —— 标题缺失时 indexOf 返回 -1，两个下标都会退化成 0，
+    // 于是 removeItems(0, n) 会连功能按钮行一起删掉。所以凡是会碰这两个下标的地方，都先判 previewingCategory。
+    private void clearContentRows() {
+        if (mAdapter.size() > 0) mAdapter.removeItems(0, mAdapter.size());
     }
 
-    private void restoreHomeContent() {
+    // 进入预览前把整个适配器（功能按钮行 / 最近观看 / 推荐 / 首页视频行）快照下来。
+    // 连续换分类时不重新快照，否则会把上一次的预览行当成首页内容存进去。
+    private void enterPreview() {
+        if (previewingCategory) return;
+        mHomeRows = new ArrayList<>();
+        for (int i = 0; i < mAdapter.size(); i++) mHomeRows.add(mAdapter.get(i));
+        previewingCategory = true;
+        SpiderDebug.log("home-chip", "enter preview snapshot rows=%s", mHomeRows.size());
+    }
+
+    // 退出预览：把快照原样放回，零网络、零重建。
+    private void exitPreview() {
         if (!previewingCategory) return;
         previewingCategory = false;
         pendingResult = PENDING_NONE;
-        if (mHomeRows.isEmpty()) {
-            loadHomeContent();
-            return;
+        SpiderDebug.log("home-chip", "exit preview restore rows=%s", mHomeRows == null ? 0 : mHomeRows.size());
+        clearContentRows();
+        if (mHomeRows != null) {
+            mAdapter.addAll(0, mHomeRows);
+            mHomeRows = null;
         }
-        SpiderDebug.log("home-chip", "home chip focused, restore cached home rows=%s", mHomeRows.size());
-        clearRecommendRows();
-        mAdapter.addAll(mAdapter.size(), mHomeRows);
+        getHistory();   // 预览期间若历史变过，这里补一次（上面已把 previewingCategory 置回 false）
     }
 
-    private void loadHomeContent() {
-        clearRecommendRows();
+    // 整页重建（切爬虫/刷新）时丢弃预览状态，不还原快照 —— 快照属于上一份首页数据，已失效
+    private void dropPreview() {
+        previewingCategory = false;
+        mHomeRows = null;
+    }
+
+    private void loadCategory(Class type) {
+        if (type == null || type.getTypeId().isEmpty()) return;
+        SpiderDebug.log("home-chip", "preview load key=%s tid=%s", getHome().getKey(), type.getTypeId());
+        enterPreview();
+        clearContentRows();
         mAdapter.add("progress");
-        pendingResult = PENDING_HOME;
-        mViewModel.homeContent();
-    }
-
-    private void snapshotHomeRows() {
-        mHomeRows.clear();
-        int index = getRecommendIndex();
-        for (int i = index; i < mAdapter.size(); i++) mHomeRows.add(mAdapter.get(i));
+        pendingResult = PENDING_CATEGORY;
+        mViewModel.categoryContent(getHome().getKey(), type.getTypeId(), "1", true, new HashMap<>());
     }
 
     private void updateToolbarVisibility(boolean visible) {
@@ -385,19 +407,31 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         if (result == null || pendingResult == PENDING_NONE) return;
         boolean category = pendingResult == PENDING_CATEGORY;
         pendingResult = PENDING_NONE;
-        mAdapter.remove("progress");
+        // ⚠️ 预览占位必须由 clearContentRows() 独家管理。这里若再 remove("progress") 一次，
+        // 占位就先没了，紧接着 clearContentRows() 仍按旧计数再删一段 —— 会连带删掉数据行。
+        if (previewingCategory) clearContentRows();
+        else mAdapter.remove("progress");
         if (!category) {
             Cache.clear().put(result);
             setTypes(mHomeResult = result);
         }
         mResult = result;
         addVideo(result, category);
-        if (!previewingCategory && pendingResult == PENDING_NONE) snapshotHomeRows();
+        SpiderDebug.log("home-chip", "onResult category=%s rows=%s preview=%s", category, result.getList().size(), previewingCategory);
     }
 
     private void setAdapter() {
         mHistoryAdapter = new ArrayObjectAdapter(mPresenter = new HistoryPresenter(this));
         mAdapter.add(new ListRow(mFuncAdapter = new ArrayObjectAdapter(new FuncPresenter(this))));
+        mAdapter.add(R.string.home_history);
+        mAdapter.add(R.string.home_recommend);
+    }
+
+    // 把适配器恢复到初始骨架：功能按钮行 + 「最近观看」标题 + 「推荐」标题。
+    // ⚠️ 两个标题行必须存在 —— getHistoryIndex()/getRecommendIndex() 是靠 indexOf(标题) 定位的。
+    private void resetContentRows() {
+        mAdapter.clear();
+        mAdapter.add(new ListRow(mFuncAdapter));
         mAdapter.add(R.string.home_history);
         mAdapter.add(R.string.home_recommend);
     }
@@ -482,7 +516,10 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
             mBinding.typeRecycler.setVisibility(View.GONE);
             mBinding.recycler.setVisibility(View.GONE);
             mBinding.progressLayout.showContent();
-            previewingCategory = false;
+            // 走网页首页时原生列表被隐藏，这里同样要把骨架复原：预览态下适配器里是没有
+            // 「最近观看/推荐」标题的，留着会让后续 getHistory() 把下标算成 0。
+            dropPreview();
+            resetContentRows();
             pendingResult = PENDING_NONE;
             showWebOverlay();
             return;
@@ -493,9 +530,11 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         mBinding.recycler.setVisibility(View.VISIBLE);
         mResult = Result.empty();
         mHomeResult = Result.empty();
-        previewingCategory = false;
+        // 预览中直接刷新时，适配器里只剩分类行（功能按钮行和标题行都被撤走了），所以必须整段重建 ——
+        // clearRecommendRows() 那套在标题缺失时会把下标算成 0，连功能按钮行一起删。
+        dropPreview();
+        resetContentRows();
         mBinding.typeRecycler.setSelectedPosition(0);
-        clearRecommendRows();
         mAdapter.add("progress");
         pendingResult = PENDING_HOME;
         mViewModel.homeContent();
@@ -533,17 +572,20 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
             return;
         }
         Style style = result.getStyle(getHome().getStyle());
-        if (style.isList()) mAdapter.addAll(mAdapter.size(), result.getList());
-        else addGrid(result.getList(), style);
+        List<Object> rows = new ArrayList<>();
+        if (style.isList()) rows.addAll(result.getList());
+        else rows.addAll(buildGridRows(result.getList(), style));
+        // 判据用 previewingCategory 而不是 category：`首页无列表 → 自动打开首个分类` 那条路也会
+        // 带上 PENDING_CATEGORY，但它不是预览，行必须照旧追加在末尾。
+        if (!previewingCategory) {
+            mAdapter.addAll(mAdapter.size(), rows);
+            return;
+        }
+        // 预览：内容区里只放分类数据（onResult 已把适配器清空，这里只负责填）
+        mAdapter.addAll(0, rows);
     }
 
-    private void clearRecommendRows() {
-        mAdapter.remove("progress");
-        int index = getRecommendIndex();
-        if (mAdapter.size() > index) mAdapter.removeItems(index, mAdapter.size() - index);
-    }
-
-    private void addGrid(List<Vod> items, Style style) {
+    private List<ListRow> buildGridRows(List<Vod> items, Style style) {
         List<ListRow> rows = new ArrayList<>();
         VodPresenter presenter = new VodPresenter(this, style);
         for (List<Vod> part : Lists.partition(items, Product.getColumn(style))) {
@@ -551,7 +593,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
             adapter.addAll(0, part);
             rows.add(new ListRow(adapter));
         }
-        mAdapter.addAll(mAdapter.size(), rows);
+        return rows;
     }
 
     private void setFunc() {
@@ -569,6 +611,9 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     }
 
     private void getHistory(boolean renew) {
+        // 预览期间内容区里没有「最近观看」标题，getHistoryIndex() 会退化成 0，
+        // 照常执行会把历史行插到功能按钮行前面。预览结束由 exitPreview() 补一次。
+        if (previewingCategory) return;
         List<History> items = History.get();
         int historyIndex = getHistoryIndex();
         int recommendIndex = getRecommendIndex();
@@ -585,7 +630,8 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     }
 
     private void clearHistory() {
-        mAdapter.removeItems(getHistoryIndex(), 1);
+        // 预览里没有历史行可删，别去碰下标（标题缺失时 getHistoryIndex() 会算成 0）
+        if (!previewingCategory) mAdapter.removeItems(getHistoryIndex(), 1);
         History.deleteAndSync(VodConfig.getCid());
         mPresenter.setDelete(false);
         mHistoryAdapter.clear();
@@ -733,7 +779,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     public void onItemDelete(History item) {
         mHistoryAdapter.remove(item.deleteAndSync());
         if (mHistoryAdapter.size() > 0) return;
-        mAdapter.removeItems(getHistoryIndex(), 1);
+        if (!previewingCategory) mAdapter.removeItems(getHistoryIndex(), 1);
         mPresenter.setDelete(false);
     }
 
