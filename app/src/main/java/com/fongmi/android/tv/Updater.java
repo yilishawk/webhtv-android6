@@ -31,6 +31,7 @@ import com.fongmi.android.tv.update.UpdateHttp;
 import com.fongmi.android.tv.update.UpdateRoutePlanner;
 import com.fongmi.android.tv.update.UpdateTarget;
 import com.fongmi.android.tv.update.UpdateTransfer;
+import com.github.catvod.crawler.SpiderDebug;
 import com.github.catvod.utils.Path;
 
 import org.json.JSONArray;
@@ -46,6 +47,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -58,6 +61,13 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     private static final Map<String, String> GITHUB_API_HEADERS = Map.of("Accept", "application/vnd.github+json", "X-GitHub-Api-Version", "2022-11-28");
     private static final Map<String, String> GITHUB_ASSET_HEADERS = Map.of("Accept", "application/octet-stream", "X-GitHub-Api-Version", "2022-11-28");
     private static final Updater INSTANCE = new Updater();
+
+    // ⛔ 更新检查**不能**复用 Task.executor()。那是个 5 线程固定池（Task.java:16），全项目 89 个调用点共用
+    // （含每个爬虫请求，SiteViewModel:195）；而 doInBackground 自己就是被 Task.execute 提交进去的、占着
+    // 其中一个线程，却还往**同一个池**提交两个子任务 ⇒ 池忙时子任务排队饿死 ⇒ 10s 总预算耗尽 ⇒
+    // awaitUpdate 抛 TimeoutException ⇒ 报「更新失败」。启动期/繁忙的电视更容易踩，空闲的手机不踩
+    // —— 这正好复现「手机检查正常、电视检查失败」。给它一对专用线程，与爬虫彻底解耦。
+    private static final ExecutorService CHECK_EXECUTOR = Executors.newFixedThreadPool(2);
 
     private final LifecycleEventObserver lifecycleObserver = (source, event) -> {
         if (!(source instanceof FragmentActivity)) return;
@@ -124,21 +134,35 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     }
 
     private void doInBackground(FragmentActivity activity, boolean forceCheck) {
-        long deadline = SystemClock.elapsedRealtime() + UPDATE_CHECK_TIMEOUT_MS;
-        Future<Update> stableFuture = Task.executor().submit(() -> getUpdate(Update.CHANNEL_STABLE));
-        Future<Update> betaFuture = Task.executor().submit(() -> getUpdate(Update.CHANNEL_BETA));
+        long started = SystemClock.elapsedRealtime();
+        long deadline = started + UPDATE_CHECK_TIMEOUT_MS;
+        // 这条链路原本一处诊断都没有，4 个失败点全是 e.printStackTrace() ⇒ 只进 logcat、不进
+        // webhtv-debug-log.txt ⇒ 真机上「检查失败」根本查不到原因。下面按阶段打点，把每个通道的
+        // 结局（有没有清单 / 有没有更新 / error 是什么）都落进日志，下次失败可直接定位。
+        SpiderDebug.log("update", "check start name=%s code=%s force=%s budget=%sms", getName(), BuildConfig.VERSION_CODE, forceCheck, UPDATE_CHECK_TIMEOUT_MS);
+        Future<Update> stableFuture = CHECK_EXECUTOR.submit(() -> getUpdate(Update.CHANNEL_STABLE));
+        Future<Update> betaFuture = CHECK_EXECUTOR.submit(() -> getUpdate(Update.CHANNEL_BETA));
         stable = awaitUpdate(stableFuture, Update.CHANNEL_STABLE, deadline);
         beta = awaitUpdate(betaFuture, Update.CHANNEL_BETA, deadline);
+        SpiderDebug.log("update", "check done elapsed=%sms stable[manifest=%s update=%s error=%s] beta[manifest=%s update=%s error=%s]",
+                SystemClock.elapsedRealtime() - started,
+                stable.hasManifest(), stable.hasUpdate(), stable.error,
+                beta.hasManifest(), beta.hasUpdate(), beta.error);
         if (!stable.hasUpdate() && !beta.hasUpdate()) {
             if (forceCheck && (stable.hasManifest() || beta.hasManifest())) {
                 selected = getPreferredUpdate();
                 App.post(() -> show(activity));
                 return;
             }
-            if (forceCheck) App.post(() -> Notify.show(hasErrorOnly() ? R.string.update_failed : R.string.update_latest));
+            if (forceCheck) {
+                boolean errorOnly = hasErrorOnly();
+                SpiderDebug.log("update", "check notify=%s", errorOnly ? "update_failed" : "update_latest");
+                App.post(() -> Notify.show(errorOnly ? R.string.update_failed : R.string.update_latest));
+            }
             return;
         }
         selected = getPreferredUpdate();
+        SpiderDebug.log("update", "check dialog selected=%s", selected == null ? "null" : selected.channel);
         App.post(() -> show(activity));
     }
 
@@ -150,16 +174,17 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     }
 
     private Update awaitUpdate(Future<Update> future, String channel, long deadline) {
+        long remaining = deadline - SystemClock.elapsedRealtime();
         try {
-            long remaining = deadline - SystemClock.elapsedRealtime();
             if (remaining <= 0) throw new TimeoutException("Update check timed out");
             return future.get(remaining, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             future.cancel(true);
-            e.printStackTrace();
-            Update update = Update.empty(channel);
-            update.error = e.getMessage();
-            return update;
+            // 「更新失败」只可能来自这里或 readUpdate 的 catch（Update.empty() 不设 error）。
+            // remaining<=0 说明 10s 总预算已耗尽，而不是这一跳网络本身慢 —— 这两者要分开看。
+            SpiderDebug.log("update", "await failed channel=%s remaining=%sms", channel, remaining);
+            SpiderDebug.log("update", e);
+            return Update.error(channel, e);
         }
     }
 
@@ -168,27 +193,36 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     }
 
     private Update getGithubStableUpdate(String channel) {
+        String url = Github.getLatestReleaseApi();
         try {
-            JSONObject release = new JSONObject(UpdateHttp.string(Github.getLatestReleaseApi(), GITHUB_API_HEADERS, GITHUB_REQUEST_TIMEOUT_MS));
+            JSONObject release = new JSONObject(UpdateHttp.string(url, GITHUB_API_HEADERS, GITHUB_REQUEST_TIMEOUT_MS));
             return readGithubReleaseUpdate(channel, release);
         } catch (Exception e) {
-            e.printStackTrace();
-            return Update.empty(channel);
+            // 以前这里 return Update.empty(channel) 且不设 error ⇒ release 列表请求失败
+            // （DNS/TLS/超时/HTTP 403）会被报成「已是最新」，与真·最新视觉上完全一样。
+            SpiderDebug.log("update", "stable list failed url=%s", url);
+            SpiderDebug.log("update", e);
+            return Update.error(channel, e);
         }
     }
 
     private Update getGithubBetaUpdate(String channel) {
         String manifestName = getManifestName(channel);
+        String url = Github.getReleasesApi();
         try {
-            JSONArray releases = new JSONArray(UpdateHttp.string(Github.getReleasesApi(), GITHUB_API_HEADERS, GITHUB_REQUEST_TIMEOUT_MS));
+            JSONArray releases = new JSONArray(UpdateHttp.string(url, GITHUB_API_HEADERS, GITHUB_REQUEST_TIMEOUT_MS));
             for (int i = 0; i < releases.length(); i++) {
                 JSONObject release = releases.optJSONObject(i);
                 if (release == null || !isBetaRelease(release)) continue;
                 if (findAsset(release.optJSONArray("assets"), manifestName) == null) continue;
                 return readGithubReleaseUpdate(channel, release);
             }
+            // 「没找到 beta 发布」不是失败，所以这里不设 error，只留痕。
+            SpiderDebug.log("update", "beta no release carrying asset=%s", manifestName);
         } catch (Exception e) {
-            e.printStackTrace();
+            SpiderDebug.log("update", "beta list failed url=%s", url);
+            SpiderDebug.log("update", e);
+            return Update.error(channel, e);
         }
         return Update.empty(channel);
     }
@@ -211,7 +245,12 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     private Update readGithubReleaseUpdate(String channel, JSONObject release) {
         JSONObject asset = findAsset(release.optJSONArray("assets"), getManifestName(channel));
         long assetId = asset == null ? 0 : asset.optLong("id");
-        if (assetId <= 0) return Update.empty(channel);
+        if (assetId <= 0) {
+            // 资产名对不上（例如 APK_SUFFIX 少了 -a6）时这里是**静默**返回的：不设 error，最终显示
+            // 「已是最新」。这不是网络失败，不该报「更新失败」，但必须留痕，否则查不到。
+            SpiderDebug.log("update", "asset missing channel=%s want=%s tag=%s", channel, getManifestName(channel), release.optString("tag_name"));
+            return Update.empty(channel);
+        }
         return readUpdate(channel, Github.getReleaseAssetApi(assetId), GITHUB_ASSET_HEADERS, release.optString("body"));
     }
 
@@ -237,8 +276,13 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
                 if (!TextUtils.isEmpty(notes)) update.notes = normalizeText(notes);
             }
         } catch (Exception e) {
-            e.printStackTrace();
-            update.error = e.getMessage();
+            // 这里失败会给 Update 设 error ⇒ 是「更新失败」的两条来源之一。清单那一跳是
+            // api.github.com/.../releases/assets/<id> → 302 → release-assets.githubusercontent.com，
+            // 而**检查链路完全没有代理**（UpdateHttp 是裸 OkHttp；GithubProxy 只在下载的
+            // UpdateRoutePlanner.addGithub 里被解析）⇒ 需要代理才能访问 GitHub 的用户，下载能行、检查必失败。
+            SpiderDebug.log("update", "manifest failed url=%s", manifestUrl);
+            SpiderDebug.log("update", e);
+            update.error = TextUtils.isEmpty(e.getMessage()) ? e.getClass().getSimpleName() : e.getMessage();
         }
         return update;
     }

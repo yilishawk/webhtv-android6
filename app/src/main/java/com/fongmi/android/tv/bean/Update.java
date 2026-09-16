@@ -31,6 +31,16 @@ public class Update {
         return update;
     }
 
+    // 失败通道必须带上非空 error。hasErrorOnly() 用 TextUtils.isEmpty(error) 判空，而除了
+    // TimeoutException，多数 IOException/JSONException 的 message 都是 null —— 直接取 getMessage()
+    // 会让一次真实失败退化成「什么都没发生」，最终显示成「已是最新」，与真·最新无法区分。
+    // 没有 message 时退回类名（Notify.getError 用的是同一套兜底思路）。
+    public static Update error(String channel, Throwable e) {
+        Update update = empty(channel);
+        update.error = TextUtils.isEmpty(e.getMessage()) ? e.getClass().getSimpleName() : e.getMessage();
+        return update;
+    }
+
     public boolean isBeta() {
         return CHANNEL_BETA.equals(channel);
     }

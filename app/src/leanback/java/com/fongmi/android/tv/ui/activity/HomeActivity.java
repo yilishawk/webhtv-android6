@@ -191,7 +191,9 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         mBinding.recycler.addOnChildViewHolderSelectedListener(new OnChildViewHolderSelectedListener() {
             @Override
             public void onChildViewHolderSelected(@NonNull RecyclerView parent, @Nullable RecyclerView.ViewHolder child, int position, int subposition) {
-                updateToolbarVisibility(isTopRow(position));
+                // 预览期间适配器里没有「最近观看」/「推荐」标题行 ⇒ indexOf 返回 -1 ⇒ isTopRow() 恒为 true，
+                // 不显式压掉的话，滚一下分类数据顶栏就又冒出来了。
+                updateToolbarVisibility(isTopRow(position) && !previewingCategory);
                 if (mPresenter.isDelete()) setHistoryDelete(false);
             }
         });
@@ -202,9 +204,18 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
                 // 而首帧那次 position=0 的选中本来就不需要拦（exitPreview 会自己 return）。
                 if (child == null) return;
                 SpiderDebug.log("home-chip", "type chip selected pos=%s focused=%s", position, parent.hasFocus());
-                updateToolbarVisibility(true);
+                // 焦点停在分类芯片上（position>0）时连顶栏一起收起：nativeContent 的上边距是
+                // toolbarHeight() 撑起来的（≈80dp = logo 48 + 上 24 + 下 8），只藏 title 不会让内容上移，
+                // 撑高度的是 logo 和 padding。用芯片位置判、**不要**用 previewingCategory —— 后者由
+                // mCategoryRunnable 延迟 100ms 才置位，会先显示一下再收起。
+                updateToolbarVisibility(position <= 0);
                 onTypeFocused(position);
             }
+        });
+        // 芯片行每次获焦都重算顶栏：否则从内容区按上键回到芯片行时选中项没变、上面那个回调不触发，
+        // 顶栏会停在「可见」，预览态下又冒出爬虫名。
+        mBinding.typeRecycler.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) updateToolbarVisibility(mBinding.typeRecycler.getSelectedPosition() <= 0);
         });
     }
 
@@ -273,6 +284,8 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         mHomeRows = new ArrayList<>();
         for (int i = 0; i < mAdapter.size(); i++) mHomeRows.add(mAdapter.get(i));
         previewingCategory = true;
+        // 兜住「首页无列表 → 自动打开首个分类」那条路：那时芯片行的选中回调不一定跑到，顶栏会留在可见。
+        updateToolbarVisibility(false);
         SpiderDebug.log("home-chip", "enter preview snapshot rows=%s", mHomeRows.size());
     }
 
@@ -281,6 +294,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         if (!previewingCategory) return;
         previewingCategory = false;
         pendingResult = PENDING_NONE;
+        updateToolbarVisibility(true);   // 回到首页：把顶栏（爬虫名/时钟）连同上边距一起还回来
         SpiderDebug.log("home-chip", "exit preview restore rows=%s", mHomeRows == null ? 0 : mHomeRows.size());
         clearContentRows();
         if (mHomeRows != null) {
@@ -299,6 +313,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private void dropPreview() {
         previewingCategory = false;
         mHomeRows = null;
+        updateToolbarVisibility(true);
         mBinding.progressLayout.showContent();
     }
 
@@ -874,12 +889,16 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         }
         if (KeyUtil.isActionDown(event) & KeyUtil.isUpKey(event) && mBinding.typeRecycler.hasFocus()) return requestTitleFocus();
         if (KeyUtil.isActionDown(event) & KeyUtil.isDownKey(event) && mBinding.typeRecycler.hasFocus()) return requestContentFocus();
-        if (KeyUtil.isActionDown(event) & KeyUtil.isUpKey(event) && mBinding.recycler.hasFocus() && mBinding.typeRecycler.getVisibility() == View.VISIBLE) updateToolbarVisibility(true);
+        // 预览态（芯片选中项 >0）不在这里亮顶栏：下一帧焦点就回到芯片行，上面那个获焦回调会立刻再收起来，
+        // 只会闪一下。
+        if (KeyUtil.isActionDown(event) & KeyUtil.isUpKey(event) && mBinding.recycler.hasFocus() && mBinding.typeRecycler.getVisibility() == View.VISIBLE && mBinding.typeRecycler.getSelectedPosition() <= 0) updateToolbarVisibility(true);
         if (KeyUtil.isActionDown(event) & KeyUtil.isDownKey(event) && getCurrentFocus() == mBinding.title) return requestHomeFocus();
         return super.dispatchKeyEvent(event);
     }
 
     private boolean requestTitleFocus() {
+        // 预览态下顶栏是收起的（title 跟着 GONE），必须先把顶栏放出来才谈得上给 title 焦点。
+        // 这是刻意保留的：按上键就是要去「标题」，这时把爬虫名显示出来是对的。
         updateToolbarVisibility(true);
         mBinding.title.setFocusable(true);
         return mBinding.title.requestFocus();
@@ -1046,7 +1065,8 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private void applyTvChrome(String mode) {
         webChromeMode = mode;
         webToolbarVisible = TV_NORMAL.equals(mode) || TV_OVERLAY.equals(mode);
-        updateToolbarVisibility(webToolbarVisible);
+        // 一并守住预览态：从网页返回原生首页时如果还停在分类预览里，别把爬虫名又亮出来。
+        updateToolbarVisibility(webToolbarVisible && !previewingCategory);
         syncWebOverlayLayout();
         if (mWeb != null) mWeb.setViewport(tvViewport(mode));
     }
