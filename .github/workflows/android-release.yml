@@ -81,10 +81,10 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          # 必须显式覆盖：这个 action 的默认值是 tools platform-tools，而 Google 已经把
-          # 独立的 tools 包从 SDK 仓库里下掉了 —— 实测 repository2-3.xml 的 255 个包里
-          # 没有 tools，sdkmanager 会报 Failed to find package 然后 exit 1。
-          # v4 的默认值同样是 tools platform-tools，所以升级 action 版本修不了这个。
+          # 必须显式覆盖：这个 action 的默认值是 "tools platform-tools"，而 Google 已经把
+          # 独立的 tools 包从 SDK 仓库里下掉了 —— 实测 repository2-3.xml 的 255 个包里没有
+          # "tools"，sdkmanager 会报 "Warning: Failed to find package 'tools'" 然后 exit 1。
+          # v4 的默认值同样是 "tools platform-tools"，所以升级 action 版本修不了这个。
           # 下面那一步会用 sdkmanager 显式装齐真正需要的包，这里只装 platform-tools 就够。
           packages: platform-tools
 
@@ -200,6 +200,22 @@ jobs:
           rm -rf dist
           mkdir -p dist
           cp Release/apk/*.apk dist/
+          # Publish the R8 mapping. Without it an obfuscated stack trace from a user
+          # cannot be deobfuscated at all, which is the one thing that makes a bug
+          # report actionable. mapping.txt is ~92 MB per variant (901k lines) but
+          # ~8 MB gzipped, so it is always gzipped; the four variants are separate R8
+          # runs, so each one is published under the name of the APK it belongs to --
+          # mapping-<asset base>.txt.gz pairs 1:1 with <asset base>.apk.
+          for dir in app/build/outputs/mapping/*Release; do
+            [ -f "$dir/mapping.txt" ] || continue
+            # mapping/<variant>Release/ but apk/<variant>/ -- the APK output directory
+            # does NOT carry the build-type suffix.
+            variant="$(basename "$dir")"
+            apk="$(ls "app/build/outputs/apk/${variant%Release}/release/"*.apk 2>/dev/null | head -1)"
+            base="$(basename "${apk%.apk}")"
+            [ -n "$base" ] || base="$variant"
+            gzip -9 -c "$dir/mapping.txt" > "dist/mapping-${base}.txt.gz"
+          done
           ls -lh dist/
 
       - name: Set up ORAS
@@ -317,12 +333,16 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
           NOTES="${RELEASE_NOTES:-手动触发 GitHub Actions 构建发布。}"
+          # The mapping archives are optional: a -PfastRelease=true build has no R8 and
+          # therefore no mapping.txt, and an unmatched glob would make gh fail outright.
+          FILES=(dist/*.apk dist/*.json)
+          for f in dist/*.txt.gz; do [ -e "$f" ] && FILES+=("$f"); done
           gh release create "${{ steps.meta.outputs.tag }}" \
             --target "$GITHUB_SHA" \
             --title "${{ steps.meta.outputs.title }}" \
             --notes "$NOTES" \
             $PRERELEASE_FLAG \
-            dist/*.apk dist/*.json
+            "${FILES[@]}"
 
       - name: Sync to CNB
         if: ${{ inputs.sync_cnb }}
