@@ -943,6 +943,11 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         } else if (mWeb != null && mWeb.isVisible()) {
             exitHome();
             return;
+        } else if (previewingCategory) {
+            // 预览态（芯片停在某个分类上）按返回 = 回「首页」。放在 progressLayout 那条之前：预览加载中
+            // （progressLayout 在转圈）时按返回，用户的意图同样是「退出这个分类」，而不是「取消转圈」。
+            backToHomeChip();
+            return;
         } else if (mBinding.progressLayout.isProgress()) {
             showContent();
         } else if (mPresenter.isDelete()) {
@@ -959,6 +964,21 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         applyTvChrome(TV_NORMAL);
         requestTitleFocus();
         return true;
+    }
+
+    // 预览态按返回 → 回「首页」。刻意不另写一套还原逻辑：快照回填、progressLayout 复位、顶栏放回
+    // 全都在 exitPreview() 里，这里只负责把芯片位置挪回 0 并把焦点交给芯片行。
+    // 芯片位置置 0 后，typeRecycler 的选中回调会在下一次 layout 再跑一遍
+    // （updateToolbarVisibility(true) + onTypeFocused(0) → mHomeRunnable），那次的 exitPreview()
+    // 会因为 previewingCategory 已经是 false 而直接 return，所以这里**立刻**还原不会和它打架。
+    // 之所以不等 mHomeRunnable 的 100ms：返回键是明确意图，延迟 100ms 只会让人以为没反应。
+    private void backToHomeChip() {
+        SpiderDebug.log("home-chip", "back key in preview -> home");
+        App.removeCallbacks(mCategoryRunnable);
+        App.removeCallbacks(mHomeRunnable);
+        mBinding.typeRecycler.setSelectedPosition(0);
+        exitPreview();
+        requestHomeFocus();
     }
 
     private void exitHome() {

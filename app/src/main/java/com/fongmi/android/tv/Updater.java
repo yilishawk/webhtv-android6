@@ -139,7 +139,11 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
         // 这条链路原本一处诊断都没有，4 个失败点全是 e.printStackTrace() ⇒ 只进 logcat、不进
         // webhtv-debug-log.txt ⇒ 真机上「检查失败」根本查不到原因。下面按阶段打点，把每个通道的
         // 结局（有没有清单 / 有没有更新 / error 是什么）都落进日志，下次失败可直接定位。
-        SpiderDebug.log("update", "check start name=%s code=%s force=%s budget=%sms", getName(), BuildConfig.VERSION_CODE, forceCheck, UPDATE_CHECK_TIMEOUT_MS);
+        // sdk/rel 必须带上：本分支存在的理由是 API 23，而「同一份 APK 手机正常、电视失败」最常见的
+        // 平台级原因是 TLS —— Android < 7.1.1 的系统信任库里**没有** ISRG Root X1，而 GitHub 的资产
+        // 下载 302 到 release-assets.githubusercontent.com，那个域的链正是 Let's Encrypt
+        // (leaf *.github.io <- Let's Encrypt YR1 <- ISRG Root YR <- ISRG Root X1)。没有 sdk 就没法排除它。
+        SpiderDebug.log("update", "check start name=%s code=%s sdk=%s rel=%s force=%s budget=%sms", getName(), BuildConfig.VERSION_CODE, Build.VERSION.SDK_INT, Build.VERSION.RELEASE, forceCheck, UPDATE_CHECK_TIMEOUT_MS);
         Future<Update> stableFuture = CHECK_EXECUTOR.submit(() -> getUpdate(Update.CHANNEL_STABLE));
         Future<Update> betaFuture = CHECK_EXECUTOR.submit(() -> getUpdate(Update.CHANNEL_BETA));
         stable = awaitUpdate(stableFuture, Update.CHANNEL_STABLE, deadline);
@@ -182,10 +186,19 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
             future.cancel(true);
             // 「更新失败」只可能来自这里或 readUpdate 的 catch（Update.empty() 不设 error）。
             // remaining<=0 说明 10s 总预算已耗尽，而不是这一跳网络本身慢 —— 这两者要分开看。
-            SpiderDebug.log("update", "await failed channel=%s remaining=%sms", channel, remaining);
+            SpiderDebug.log("update", "await failed channel=%s remaining=%sms cause=%s", channel, remaining, describe(e));
             SpiderDebug.log("update", e);
             return Update.error(channel, e);
         }
+    }
+
+    // 日志的「摘要」视图只保留每条记录的第一行，而 SpiderDebug.log(tag, Throwable) 那一条的第一行
+    // 常常只有类名、message 是 null。把**根因**的类和 message 直接并进失败行，远程一眼就能分清是
+    // TLS 证书不受信任、DNS 失败，还是纯超时 —— 这三种的处理方式完全不同。
+    private String describe(Throwable e) {
+        Throwable root = e;
+        for (int i = 0; i < 8 && root.getCause() != null && root.getCause() != root; i++) root = root.getCause();
+        return root.getClass().getSimpleName() + (TextUtils.isEmpty(root.getMessage()) ? "" : ": " + root.getMessage());
     }
 
     private Update getUpdate(String channel) {
@@ -200,7 +213,7 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
         } catch (Exception e) {
             // 以前这里 return Update.empty(channel) 且不设 error ⇒ release 列表请求失败
             // （DNS/TLS/超时/HTTP 403）会被报成「已是最新」，与真·最新视觉上完全一样。
-            SpiderDebug.log("update", "stable list failed url=%s", url);
+            SpiderDebug.log("update", "stable list failed url=%s cause=%s", url, describe(e));
             SpiderDebug.log("update", e);
             return Update.error(channel, e);
         }
@@ -220,7 +233,7 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
             // 「没找到 beta 发布」不是失败，所以这里不设 error，只留痕。
             SpiderDebug.log("update", "beta no release carrying asset=%s", manifestName);
         } catch (Exception e) {
-            SpiderDebug.log("update", "beta list failed url=%s", url);
+            SpiderDebug.log("update", "beta list failed url=%s cause=%s", url, describe(e));
             SpiderDebug.log("update", e);
             return Update.error(channel, e);
         }
@@ -280,7 +293,7 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
             // api.github.com/.../releases/assets/<id> → 302 → release-assets.githubusercontent.com，
             // 而**检查链路完全没有代理**（UpdateHttp 是裸 OkHttp；GithubProxy 只在下载的
             // UpdateRoutePlanner.addGithub 里被解析）⇒ 需要代理才能访问 GitHub 的用户，下载能行、检查必失败。
-            SpiderDebug.log("update", "manifest failed url=%s", manifestUrl);
+            SpiderDebug.log("update", "manifest failed url=%s cause=%s", manifestUrl, describe(e));
             SpiderDebug.log("update", e);
             update.error = TextUtils.isEmpty(e.getMessage()) ? e.getClass().getSimpleName() : e.getMessage();
         }
