@@ -21,6 +21,7 @@ import com.fongmi.android.tv.utils.AppVersion;
 import com.fongmi.android.tv.utils.BundledCaTrust;
 import com.fongmi.android.tv.utils.Github;
 import com.fongmi.android.tv.utils.Notify;
+import com.fongmi.android.tv.utils.PermissionUtil;
 import com.fongmi.android.tv.utils.ResUtil;
 import com.fongmi.android.tv.utils.Task;
 import com.fongmi.android.tv.update.GithubProxy;
@@ -101,7 +102,14 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     }
 
     private File getFile() {
-        return Path.cache("update.apk");
+        // ⭐ API ≤ 23：安装器只认 file://，而且它拿到 URI 之后是 `new File(uri.getPath())`
+        // **自己按路径读文件**（AOSP PackageInstallerActivity，详见 FileUtil.openFile 的注释）
+        // ⇒ 包必须落在安装器读得到的地方。应用私有目录和 Android/data/<pkg> 都不行，
+        // 只有共享外部存储的公共目录可以（判据集中在 FileUtil.getInstallStagingDir）。
+        // 有写权限就直接下到那里，**一次拷贝都不需要**；没有就退回私有目录，
+        // 安装前再由 FileUtil 兜底搬运（搬不动就保持旧行为，不额外制造故障面）。
+        File dir = FileUtil.getInstallStagingDir();
+        return dir == null ? Path.cache("update.apk") : new File(dir, "update.apk");
     }
 
     private String getName() {
@@ -400,6 +408,23 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
             Notify.show(R.string.update_latest);
             return;
         }
+        // ⭐ API ≤ 23：装包必须经过**共享外部存储的公共目录**（见 FileUtil.getInstallStagingDir）——
+        // 应用私有目录和 Android/data/<pkg> 安装器都读不到，下完了也装不上。而写公共目录需要
+        // WRITE_EXTERNAL_STORAGE。所以先要权限；要不到也继续走（退回私有目录，
+        // 至少不改变"能下、能提示"的既有行为），真实原因会留在 install 日志里。
+        FragmentActivity host = activityRef == null ? null : activityRef.get();
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N && !Setting.hasFileAccess() && host != null && !host.isFinishing()) {
+            SpiderDebug.log("update", "request file access before download sdk=%s", Build.VERSION.SDK_INT);
+            PermissionUtil.requestFile(host, granted -> {
+                SpiderDebug.log("update", "file access granted=%s", granted);
+                App.post(() -> beginDownload(view));
+            });
+            return;
+        }
+        beginDownload(view);
+    }
+
+    private void beginDownload(View view) {
         view.setEnabled(false);
         downloading = true;
         canceled = false;

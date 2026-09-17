@@ -1104,6 +1104,7 @@
     <string name="update_download_incomplete">更新包下載不完整，請重試。</string>
     <string name="update_download_checksum">更新包校驗失敗，請重試。</string>
     <string name="update_download_invalid">更新包無效，請重試。</string>
+    <string name="update_install_unavailable">系統沒有可用的安裝元件，請手動安裝。</string>
     <string name="update_download_identity">更新包的應用程式身分或簽章與目前應用程式不一致。</string>
     <string name="update_download_source_unavailable">目前版本不支援所選下載來源。</string>
     <string name="update_confirm">更新</string>

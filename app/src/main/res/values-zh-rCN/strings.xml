@@ -1120,6 +1120,7 @@
     <string name="update_download_incomplete">更新包下载不完整，请重试。</string>
     <string name="update_download_checksum">更新包校验失败，请重试。</string>
     <string name="update_download_invalid">更新包无效，请重试。</string>
+    <string name="update_install_unavailable">系统没有可用的安装组件，请手动安装。</string>
     <string name="update_download_identity">更新包的应用身份或签名与当前应用不一致。</string>
     <string name="update_download_source_unavailable">当前版本不支持所选下载源。</string>
     <string name="update_confirm">更新</string>

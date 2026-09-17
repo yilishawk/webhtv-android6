@@ -1123,6 +1123,7 @@
     <string name="update_download_incomplete">The update package was not fully downloaded. Please try again.</string>
     <string name="update_download_checksum">The update package failed verification. Please try again.</string>
     <string name="update_download_invalid">The update package is invalid. Please try again.</string>
+    <string name="update_install_unavailable">No system component can install this package. Please install it manually.</string>
     <string name="update_download_identity">The update package identity or signature does not match this app.</string>
     <string name="update_download_source_unavailable">The selected update source is not available for this release.</string>
     <string name="update_confirm">Update</string>
