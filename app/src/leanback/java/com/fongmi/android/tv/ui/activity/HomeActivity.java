@@ -55,6 +55,7 @@ import com.fongmi.android.tv.ui.adapter.BaseDiffCallback;
 import com.fongmi.android.tv.ui.adapter.TypeAdapter;
 import com.fongmi.android.tv.ui.base.BaseActivity;
 import com.fongmi.android.tv.ui.custom.CustomRowPresenter;
+import com.fongmi.android.tv.ui.custom.CustomScroller;
 import com.fongmi.android.tv.ui.custom.CustomSelector;
 import com.fongmi.android.tv.ui.custom.CustomTitleView;
 import com.fongmi.android.tv.ui.dialog.ExitConfirmDialog;
@@ -102,6 +103,8 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private static final int PENDING_NONE = 0;
     private static final int PENDING_HOME = 1;
     private static final int PENDING_CATEGORY = 2;
+    /** 预览态翻页（第 2 页起）。与 PENDING_CATEGORY 分开：那条会 clearContentRows()，翻页必须**追加**。 */
+    private static final int PENDING_CATEGORY_MORE = 3;
 
     private ActivityHomeBinding mBinding;
     private ArrayObjectAdapter mHistoryAdapter;
@@ -122,6 +125,17 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private List<Object> mHomeRows;
     private int pendingResult = PENDING_NONE;
     private boolean previewingCategory;
+    /**
+     * 预览态翻页。挂在 mBinding.recycler 上；非预览态 onLoadMore() 直接返回 false，什么都不做。
+     * ⚠️ 在字段处就构造，不在 setRecyclerView() 里 new —— dropPreview() 可能被 ConfigEvent/RefreshEvent
+     *    提前触发（那时 setRecyclerView() 还没跑），字段为 null 会让 reset() 直接 NPE。
+     *    CustomScroller 的构造函数只存回调，不碰任何 View，所以在字段处构造是安全的。
+     */
+    private final CustomScroller mScroller = new CustomScroller(this::onLoadMore);
+    /** 当前预览的分类 typeId（翻页要用）。null = 不在预览。 */
+    private String mPreviewTypeId;
+    /** 预览态网格的**最后一行**。它可能没填满，下一页要先把它补齐，否则每页都留一条半行。 */
+    private ArrayObjectAdapter mPreviewLast;
 
     private Site getHome() {
         return VodConfig.get().getHome();
@@ -294,6 +308,10 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         if (!previewingCategory) return;
         previewingCategory = false;
         pendingResult = PENDING_NONE;
+        // 翻页状态必须一起归零：否则下次进预览时页码还停在上次的 3，第一屏就要的是第 4 页。
+        mPreviewTypeId = null;
+        mPreviewLast = null;
+        mScroller.reset();
         updateToolbarVisibility(true);   // 回到首页：把顶栏（爬虫名/时钟）连同上边距一起还回来
         SpiderDebug.log("home-chip", "exit preview restore rows=%s", mHomeRows == null ? 0 : mHomeRows.size());
         clearContentRows();
@@ -313,6 +331,9 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     private void dropPreview() {
         previewingCategory = false;
         mHomeRows = null;
+        mPreviewTypeId = null;
+        mPreviewLast = null;
+        mScroller.reset();
         updateToolbarVisibility(true);
         mBinding.progressLayout.showContent();
     }
@@ -322,6 +343,11 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         SpiderDebug.log("home-chip", "preview load key=%s tid=%s", getHome().getKey(), type.getTypeId());
         enterPreview();
         clearContentRows();
+        // 换分类（或重进同一个）都要把翻页状态归零：页码回到 1，网格"最后一行"作废。
+        // 不归零的话，从 A 分类翻到第 3 页再切到 B 分类，B 会直接从第 4 页开始要数据。
+        mPreviewTypeId = type.getTypeId();
+        mPreviewLast = null;
+        mScroller.reset();
         // 用 progressLayout 自带的居中转圈（与分类页 TypeFragment 同一套），不往适配器里塞 "progress" 占位：
         // 预览期间适配器保持空，往下按就不会误落到一行占位上。它同时把 recycler 置为 INVISIBLE，
         // 所以必须在 exitPreview()/dropPreview() 里复位（见上面的 showContent()）。
@@ -399,6 +425,9 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         selector.addPresenter(ListRow.class, new CustomRowPresenter(16, FocusHighlight.ZOOM_FACTOR_SMALL, HorizontalGridView.FOCUS_SCROLL_ALIGNED), HistoryPresenter.class);
         mBinding.recycler.setAdapter(new ItemBridgeAdapter(mAdapter = new ArrayObjectAdapter(selector)));
         mBinding.recycler.setVerticalSpacing(ResUtil.dp2px(16));
+        // 预览态翻页：与分类页 TypeFragment 同一套机制（滚到底且 IDLE ⇒ onLoadMore）。
+        // 非预览态 onLoadMore() 返回 false ⇒ 不推进页码、不置 loading，等于什么都没发生。
+        mBinding.recycler.addOnScrollListener(mScroller);
         mBinding.typeRecycler.setHorizontalSpacing(ResUtil.dp2px(16));
         mBinding.typeRecycler.setRowHeight(android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
         mBinding.typeRecycler.setAdapter(mTypeAdapter = new TypeAdapter(this));
@@ -432,6 +461,17 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
 
     private void onResult(Result result) {
         if (result == null || pendingResult == PENDING_NONE) return;
+        // 预览翻页的结果：**不清空、不重建**，只往末尾追加。
+        // 必须与 PENDING_CATEGORY 分开走 —— 那条会 clearContentRows()，用它来翻页会把已经加载的前几页全删掉。
+        if (pendingResult == PENDING_CATEGORY_MORE) {
+            pendingResult = PENDING_NONE;
+            if (!previewingCategory) return;   // 预览已退出 / 整页已重建 ⇒ 这一页作废
+            mResult = result;
+            appendPreviewPage(result);
+            SpiderDebug.log("home-chip", "onResult more rows=%s total=%s", result.getList().size(), mAdapter.size());
+            endPreviewLoading(result);
+            return;
+        }
         boolean category = pendingResult == PENDING_CATEGORY;
         pendingResult = PENDING_NONE;
         // ⚠️ 预览占位必须由 clearContentRows() 独家管理。这里若再 remove("progress") 一次，
@@ -620,6 +660,86 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         } else {
             mBinding.progressLayout.showContent();
         }
+        // 第一页也要收尾：endLoading() 会按 pageCount 决定还能不能翻（pageCount=1 就直接禁用），
+        // 并且 checkMore() 负责「内容不足一屏、滚不到底」时的自动补页。
+        endPreviewLoading(result);
+    }
+
+    /**
+     * 预览态翻页的收尾：把 CustomScroller 的 loading 清掉、按 pageCount 决定还能不能翻，
+     * 再决定要不要自动补一页。分类页 TypeFragment 的 setAdapter() 里也是这两步。
+     *
+     * ⚠️ **空结果绝不能 checkMore()**：CustomScroller.endLoading() 对空列表会 `page--`，
+     *    而 setEnable(0)（pageCount 未知）又会把 enable 打开 ⇒ 再自动要一次就会拿**同一个页码**
+     *    无限重试。分类页 TypeFragment 是靠 `if (size > 0) addVideo(result)` 才避开这一格的
+     *    （checkMore 在 addVideo 里面），这里必须在同一个地方拦住。
+     */
+    private void endPreviewLoading(Result result) {
+        if (!previewingCategory) return;
+        mScroller.endLoading(result);
+        if (result.getList().isEmpty()) return;
+        checkMore();
+    }
+
+    /**
+     * 内容不足一屏时列表滚不到底 ⇒ CustomScroller 的 onScrollStateChanged 永远不会触发 ⇒ 得手动补一次。
+     * 上限与分类页 TypeFragment 一致（5 行）：够 5 行就不再自动要，剩下的交给用户滚到底触发。
+     */
+    private void checkMore() {
+        if (mScroller.isDisable() || mAdapter.size() >= 5) return;
+        mScroller.checkMore();
+    }
+
+    /**
+     * 预览态翻页（由 CustomScroller 在「滚到底且 IDLE」或 checkMore() 时回调）。
+     *
+     * ⚠️ 只有预览才翻：首页那几行（功能按钮 / 最近观看 / 推荐 / 首页视频行）不是分页数据。
+     * 返回 false 时 CustomScroller **既不推进页码也不置 loading**，等于什么都没发生 —— 这正是我们要的。
+     */
+    private boolean onLoadMore(String page) {
+        if (!previewingCategory || mPreviewTypeId == null) return false;
+        // 还有请求在飞（最常见的是第一页）就别插队：pendingResult 是单槽，插队会把它覆盖成
+        // PENDING_CATEGORY_MORE，于是第一页的结果会被当成"翻页"处理 —— 不走 clearContentRows()，
+        // 而是被追加到空适配器后面，表现就是"第一页少了前面几条"。直接拒绝最稳。
+        if (pendingResult != PENDING_NONE) return false;
+        SpiderDebug.log("home-chip", "preview load more page=%s tid=%s rows=%s", page, mPreviewTypeId, mAdapter.size());
+        pendingResult = PENDING_CATEGORY_MORE;
+        mViewModel.categoryContent(getHome().getKey(), mPreviewTypeId, page, true, new HashMap<>());
+        return true;
+    }
+
+    /**
+     * 预览态追加一页。**只往末尾追加，绝不删改前面的行。**
+     *
+     * ⚠️ 必须用 mAdapter.addAll(mAdapter.size(), …)：预览期间适配器里没有「最近观看」/「推荐」标题行，
+     *    getHistoryIndex()/getRecommendIndex() 是 `indexOf(标题) + 1` 动态算的，标题缺失时 indexOf 返回 -1，
+     *    两个下标都会退化成 0 ⇒ 任何插到前面或按下标删除的操作都会误伤内容行（见 previewingCategory 那段注释）。
+     */
+    private void appendPreviewPage(Result result) {
+        Style style = result.getStyle(getHome().getStyle());
+        List<Vod> items = result.getList();
+        if (style.isList()) {
+            mAdapter.addAll(mAdapter.size(), items);
+            return;
+        }
+        // 网格：上一页最后一行可能没填满，先用这一页把它补齐，否则每页末尾都留一条半行，看起来像断页。
+        if (mPreviewLast != null && !items.isEmpty()) {
+            int room = Product.getColumn(style) - mPreviewLast.size();
+            if (room > 0) {
+                int take = Math.min(room, items.size());
+                mPreviewLast.addAll(mPreviewLast.size(), items.subList(0, take));
+                items = items.subList(take, items.size());
+            }
+        }
+        if (items.isEmpty()) return;
+        List<ListRow> rows = new ArrayList<>();
+        VodPresenter presenter = new VodPresenter(this, style);
+        for (List<Vod> part : Lists.partition(items, Product.getColumn(style))) {
+            mPreviewLast = new ArrayObjectAdapter(presenter);
+            mPreviewLast.addAll(0, part);
+            rows.add(new ListRow(mPreviewLast));
+        }
+        mAdapter.addAll(mAdapter.size(), rows);
     }
 
     private List<ListRow> buildGridRows(List<Vod> items, Style style) {
@@ -630,6 +750,9 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
             adapter.addAll(0, part);
             rows.add(new ListRow(adapter));
         }
+        // 预览态翻页要靠它把下一页接着填进最后那一行；非预览路径不读它
+        // （loadCategory()/exitPreview()/dropPreview() 都会清掉）。
+        mPreviewLast = rows.isEmpty() ? null : (ArrayObjectAdapter) rows.get(rows.size() - 1).getAdapter();
         return rows;
     }
 
