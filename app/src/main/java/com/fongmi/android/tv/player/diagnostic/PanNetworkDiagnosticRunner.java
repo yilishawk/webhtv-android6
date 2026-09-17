@@ -9,6 +9,7 @@ import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
 
 import com.fongmi.android.tv.App;
+import com.fongmi.android.tv.utils.BundledCaTrust;
 import com.github.catvod.crawler.SpiderDebug;
 
 import java.io.IOException;
@@ -59,14 +60,14 @@ public final class PanNetworkDiagnosticRunner {
     private volatile DataSource activeDataSource;
 
     public PanNetworkDiagnosticRunner() {
-        client = new OkHttpClient.Builder()
+        client = BundledCaTrust.apply(new OkHttpClient.Builder()
                 .proxy(Proxy.NO_PROXY)
                 .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .connectionPool(new ConnectionPool(0, 1, TimeUnit.MILLISECONDS))
                 .protocols(List.of(Protocol.HTTP_1_1))
                 .followRedirects(true)
-                .followSslRedirects(true)
+                .followSslRedirects(true))
                 .build();
     }
 

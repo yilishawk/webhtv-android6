@@ -1,5 +1,6 @@
 package com.fongmi.android.tv.player.danmaku;
 
+import com.fongmi.android.tv.utils.BundledCaTrust;
 import com.github.catvod.net.OkHttp;
 
 import java.util.concurrent.ExecutorService;
@@ -35,7 +36,7 @@ public final class LiveDanmakuWebSocketClient {
         dispatcher.setMaxRequests(4);
         dispatcher.setMaxRequestsPerHost(2);
         connectionPool = new ConnectionPool(2, 1L, TimeUnit.MINUTES);
-        client = new OkHttpClient.Builder()
+        client = BundledCaTrust.apply(new OkHttpClient.Builder()
                 .dispatcher(dispatcher)
                 .connectionPool(connectionPool)
                 .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -43,7 +44,7 @@ public final class LiveDanmakuWebSocketClient {
                 .writeTimeout(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .callTimeout(0L, TimeUnit.MILLISECONDS)
                 .pingInterval(0L, TimeUnit.MILLISECONDS)
-                .proxySelector(new LiveDanmakuProxySelector(OkHttp.selector()))
+                .proxySelector(new LiveDanmakuProxySelector(OkHttp.selector())))
                 .build();
     }
 

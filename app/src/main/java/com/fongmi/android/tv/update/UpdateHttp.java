@@ -1,5 +1,7 @@
 package com.fongmi.android.tv.update;
 
+import com.fongmi.android.tv.utils.BundledCaTrust;
+
 import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -12,12 +14,16 @@ import okhttp3.ResponseBody;
 public final class UpdateHttp {
 
     private static final int MAX_TEXT_BYTES = 2 * 1024 * 1024;
-    private static final OkHttpClient CLIENT = new OkHttpClient.Builder()
+    // BundledCaTrust：Android 6 的系统信任库里没有 ISRG Root X1，而 api.github.com 的资产请求
+    // 会 302 到 release-assets.githubusercontent.com（Let's Encrypt 签的）⇒ 光靠系统信任库，
+    // 第一次请求能过、跟到重定向就断。这里挂上「系统 ∪ APK 内置 145 个 Mozilla 根」。
+    // 检查（string）、下载（client）、OCI 拉取（ociClient）三条路共用这个 CLIENT，一处修就都修了。
+    private static final OkHttpClient CLIENT = BundledCaTrust.apply(new OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(45, TimeUnit.SECONDS)
             .writeTimeout(45, TimeUnit.SECONDS)
             .followRedirects(true)
-            .followSslRedirects(false)
+            .followSslRedirects(false))
             .build();
     private static final OkHttpClient OCI_CLIENT = CLIENT.newBuilder()
             .followRedirects(false)

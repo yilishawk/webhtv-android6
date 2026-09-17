@@ -7,6 +7,7 @@ import androidx.fragment.app.FragmentActivity;
 import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.ui.dialog.ApkPushProgressDialog;
+import com.fongmi.android.tv.utils.BundledCaTrust;
 import com.fongmi.android.tv.utils.FileUtil;
 import com.fongmi.android.tv.utils.Notify;
 import com.fongmi.android.tv.utils.Task;
@@ -41,7 +42,7 @@ public final class ApkUrlPush {
     private static final OkHttpClient CLIENT = createClient();
 
     static OkHttpClient createClient() {
-        return new OkHttpClient.Builder()
+        return BundledCaTrust.apply(new OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .callTimeout(20, TimeUnit.MINUTES)
@@ -50,7 +51,7 @@ public final class ApkUrlPush {
             .retryOnConnectionFailure(false)
             .dns(ApkUrlPolicy.publicDns())
             .proxy(Proxy.NO_PROXY)
-            .protocols(List.of(Protocol.HTTP_1_1))
+            .protocols(List.of(Protocol.HTTP_1_1)))
             .build();
     }
 

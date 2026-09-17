@@ -6,6 +6,7 @@ import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.bean.drive.DriveCheckItem;
 import com.fongmi.android.tv.bean.drive.DriveCheckResponse;
 import com.fongmi.android.tv.bean.drive.DriveCheckResult;
+import com.fongmi.android.tv.utils.BundledCaTrust;
 import com.github.catvod.crawler.SpiderDebug;
 import com.github.catvod.utils.Prefers;
 import com.google.gson.JsonObject;
@@ -89,12 +90,12 @@ public class DriveCheckService {
     public DriveCheckService() {
         this.memory = new ConcurrentHashMap<>();
         this.inflight = new HashMap<>();
-        this.client = new OkHttpClient.Builder()
+        this.client = BundledCaTrust.apply(new OkHttpClient.Builder()
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .connectTimeout(12, TimeUnit.SECONDS)
                 .readTimeout(12, TimeUnit.SECONDS)
-                .writeTimeout(12, TimeUnit.SECONDS)
+                .writeTimeout(12, TimeUnit.SECONDS))
                 .build();
         loadCache();
     }

@@ -18,6 +18,7 @@ import com.fongmi.android.tv.setting.Setting;
 import com.fongmi.android.tv.ui.dialog.UpdateDialog;
 import com.fongmi.android.tv.utils.FileUtil;
 import com.fongmi.android.tv.utils.AppVersion;
+import com.fongmi.android.tv.utils.BundledCaTrust;
 import com.fongmi.android.tv.utils.Github;
 import com.fongmi.android.tv.utils.Notify;
 import com.fongmi.android.tv.utils.ResUtil;
@@ -143,7 +144,7 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
         // 平台级原因是 TLS —— Android < 7.1.1 的系统信任库里**没有** ISRG Root X1，而 GitHub 的资产
         // 下载 302 到 release-assets.githubusercontent.com，那个域的链正是 Let's Encrypt
         // (leaf *.github.io <- Let's Encrypt YR1 <- ISRG Root YR <- ISRG Root X1)。没有 sdk 就没法排除它。
-        SpiderDebug.log("update", "check start name=%s code=%s sdk=%s rel=%s force=%s budget=%sms", getName(), BuildConfig.VERSION_CODE, Build.VERSION.SDK_INT, Build.VERSION.RELEASE, forceCheck, UPDATE_CHECK_TIMEOUT_MS);
+        SpiderDebug.log("update", "check start name=%s code=%s sdk=%s rel=%s trust=%d force=%s budget=%sms", getName(), BuildConfig.VERSION_CODE, Build.VERSION.SDK_INT, Build.VERSION.RELEASE, BundledCaTrust.bundledRootCount(), forceCheck, UPDATE_CHECK_TIMEOUT_MS);
         Future<Update> stableFuture = CHECK_EXECUTOR.submit(() -> getUpdate(Update.CHANNEL_STABLE));
         Future<Update> betaFuture = CHECK_EXECUTOR.submit(() -> getUpdate(Update.CHANNEL_BETA));
         stable = awaitUpdate(stableFuture, Update.CHANNEL_STABLE, deadline);
