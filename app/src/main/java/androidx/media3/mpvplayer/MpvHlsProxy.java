@@ -2382,14 +2382,14 @@ public final class MpvHlsProxy extends NanoHTTPD {
             initialized = true;
             prefix = readPrefix();
             prefixLength = prefix.length;
-            int stripOffset = MpvHlsSegmentContentPolicy.findPngWrappedTransportStreamOffset(prefix, prefixLength);
+            int stripOffset = MpvHlsSegmentContentPolicy.findTransportStreamOffset(prefix, prefixLength);
             if (stripOffset > 0 && stripOffset < prefixLength) {
                 prefixOffset = stripOffset;
                 strippedPrefixBytes = stripOffset;
                 if (diagnostics) {
                     SpiderDebug.log(TAG,
-                            "strip png prefix offset=%d prefixBytes=%d url=%s",
-                            stripOffset, prefixLength, shortUrl(url));
+                            "strip image prefix offset=%d prefixBytes=%d kind=%s url=%s",
+                            stripOffset, prefixLength, imagePrefixKind(prefix, prefixLength), shortUrl(url));
                 }
             } else {
                 prefixOffset = 0;
@@ -2397,6 +2397,13 @@ public final class MpvHlsProxy extends NanoHTTPD {
             }
         }
 
+        /**
+         * 2026-09-17 修正：原来第一句就是
+         * `if (length >= 8 && !startsWithPngSignature(buffer, length)) break;`
+         * ⇒ **非 PNG 的伪装头立刻退出扫描、永远不剥壳**。真机上的分片是
+         * **54 字节 BMP 头**（`BM`…），因此一路原样透传给了 mpv。
+         * 现在：PNG 走原来的"等 IEND"逻辑；其它伪装头用通用探测，上限 8 KB。
+         */
         private byte[] readPrefix() throws IOException {
             byte[] buffer = new byte[PREFIX_SCAN_LIMIT];
             int length = 0;
@@ -2404,13 +2411,29 @@ public final class MpvHlsProxy extends NanoHTTPD {
                 int read = upstream.read(buffer, length, buffer.length - length);
                 if (read == -1) break;
                 length += read;
-                if (length >= 8 && !MpvHlsSegmentContentPolicy.startsWithPngSignature(buffer, length)) break;
-                int offset = MpvHlsSegmentContentPolicy.findPngWrappedTransportStreamOffset(buffer, length);
-                if (offset > 0 && length > offset + 188) break;
+                if (length >= 8 && MpvHlsSegmentContentPolicy.startsWithPngSignature(buffer, length)) {
+                    int pngOffset = MpvHlsSegmentContentPolicy.findPngWrappedTransportStreamOffset(buffer, length);
+                    if (pngOffset > 0 && length > pngOffset + MpvHlsSegmentContentPolicy.TS_PACKET_BYTES) break;
+                    continue;
+                }
+                if (length >= MpvHlsSegmentContentPolicy.TS_PACKET_BYTES * 5) {
+                    if (MpvHlsSegmentContentPolicy.startsAtTransportStreamPacket(buffer, length)) break;
+                    int offset = MpvHlsSegmentContentPolicy.findTransportStreamOffset(buffer, length);
+                    if (offset > 0 && length > offset + MpvHlsSegmentContentPolicy.TS_PACKET_BYTES) break;
+                }
+                if (length >= MpvHlsSegmentContentPolicy.IMAGE_PREFIX_SCAN_LIMIT) break;
             }
             byte[] result = new byte[length];
             System.arraycopy(buffer, 0, result, 0, length);
             return result;
+        }
+
+        private static String imagePrefixKind(byte[] data, int length) {
+            if (MpvHlsSegmentContentPolicy.startsWithPngSignature(data, length)) return "png";
+            if (length >= 2 && data[0] == 'B' && data[1] == 'M') return "bmp";
+            if (length >= 2 && (data[0] & 0xFF) == 0xFF && (data[1] & 0xFF) == 0xD8) return "jpeg";
+            if (length >= 8 && data[0] == (byte) 0x89 && data[1] == 'P') return "png-like";
+            return "unknown";
         }
 
     }

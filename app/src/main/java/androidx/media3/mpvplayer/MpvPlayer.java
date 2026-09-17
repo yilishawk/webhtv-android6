@@ -102,6 +102,12 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
      * 6s 是刻意的：太短会在慢网/慢解码上误报（还在缓冲、第一帧没到），太长则用户已经盯够了黑屏。
      */
     private static final long VIDEO_OUTPUT_WATCHDOG_MS = 6000;
+    /**
+     * 上面那个阈值是**按播放位置**算的，对"解码器起不来"这种失败模式**用不了**：
+     * 分片大面积 404 时位置几乎不推进（实测 1.5s 只走了 78ms），永远够不到 6s。
+     * 所以这条探针改按 **file-loaded 之后的墙钟时间**算，阈值也小得多。
+     */
+    private static final long VIDEO_TRACK_WATCHDOG_MS = 2500;
     private static final long LOAD_START_RETRY_DELAY_MS = 1000;
     private static final long POST_RESTART_TRACK_REFRESH_DELAY_MS = 120;
     private static final long INITIAL_TRACK_SELECTION_LOAD_TIMEOUT_MS = 15000;
@@ -274,6 +280,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private boolean sawVideoOutputError;
     private boolean sawDrmError;
     private boolean videoOutputWatchdogReported;
+    private boolean videoTrackWatchdogReported;
+    private boolean videoSizeWithheldReported;
     private boolean cachedCacheIdle;
     private boolean cachedCacheUnderrun;
     private boolean cachedCacheBof;
@@ -1454,6 +1462,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         setOption("embeddedfonts", "yes");
         setOption("sub-fix-timing", "yes");
         setOption("sub-use-margins", "yes");
+        // sub-font-provider **带前缀**：本包 libmpv 里没有 `sub-font-provider` 字面量，但也没有
+        // `sub-font`/`sub-color`；裸字段 `font`/`font-size`/`color`/`font-provider` 却在同一张
+        // 64 字节步长的字段表里 ⇒ mpv 的**子结构体**机制（字段无前缀，全名运行时拼，二进制有
+        // `%s-%s`）。已知对照：`sub-filter-sdh` 同样只以裸字段 `sdh` 出现。⇒ 前缀不能省。
         setOption("sub-font-provider", "fontconfig");
         setOption("msg-level", config.logLevel());
         for (Map.Entry<String, String> entry : config.extraOptions().entrySet()) setOption(entry.getKey(), entry.getValue());
@@ -3111,7 +3123,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Nullable
     private SizeCandidate candidateFromSelectedVideoTrack() {
-        SizeCandidate firstVideo = null;
+        SizeCandidate unselected = null;
         for (Tracks.Group group : currentTracks.getGroups()) {
             if (group.length <= 0) continue;
             Format format = group.getTrackFormat(0);
@@ -3119,11 +3131,34 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             int width = format.width;
             int height = format.height;
             if (width <= 0 || height <= 0) continue;
-            SizeCandidate candidate = new SizeCandidate(width, height, "tracks-cache");
-            if (firstVideo == null) firstVideo = candidate;
-            if (group.isTrackSelected(0)) return candidate;
+            if (group.isTrackSelected(0)) return new SizeCandidate(width, height, "tracks-cache");
+            if (unselected == null) unselected = new SizeCandidate(width, height, "tracks-cache");
         }
-        return firstVideo;
+        /*
+         * 2026-09-17 修正（真机取证）：这里以前在**没有任何视频轨被选中**时把 unselected 返回出去。
+         * 后果：mpv 明明所有尺寸属性都是 0x0（解码器起不来、vid=no），我们却对外报出 1920x1080。
+         * 于是 Media3 收到 onVideoSizeChanged ⇒ PlayerManager.videoSize 非 0 ⇒
+         * MpvAutoOutputPolicy.canRevealDirectFrame() 成立 ⇒ 闸门（shutter）打开 ⇒
+         * 用户看到**黑屏有声**，而且全程不报错。
+         * 真机日志里 `selected=tracks-cache:1920x1080` 与 `legacy=wh:0x0` 并存就是这个谎。
+         * 现在只认真正被选中的轨道；拿不到就不报，让上层如实显示"还没出画"。
+         */
+        reportWithheldVideoSize(unselected);
+        return null;
+    }
+
+    /**
+     * 记录一次"本来能报出尺寸、但因为没有任何视频轨被选中而拒绝报"的事件。
+     * 这是"黑屏有声"这类静默失败唯一能被日志抓住的地方，所以只报一次、不改行为。
+     */
+    private void reportWithheldVideoSize(@Nullable SizeCandidate unselected) {
+        if (unselected == null || videoSizeWithheldReported) return;
+        videoSizeWithheldReported = true;
+        if (!shouldCollectDebugDetails()) return;
+        PlaybackTrace.log("mpv-no-video", playbackTraceId,
+                "withheld video size %dx%d source=%s reason=no-selected-video-track vid=%s fileLoaded=%s restarted=%s",
+                unselected.width, unselected.height, unselected.source,
+                propertyStringOrInt("vid"), fileLoaded, playbackRestarted);
     }
 
     private void logVideoSizeCandidates(String reason, @Nullable SizeCandidate candidate) {
@@ -3288,6 +3323,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         if (currentLikelyHls) requestHlsPreload(cachedPositionMs);
         refreshCacheState();
         checkVideoOutputWatchdog();
+        checkVideoTrackWatchdog();
         invalidateState();
         startStateRefresh();
     }
@@ -3407,6 +3443,40 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             SpiderDebug.log("mpv-vo", "video output never configured position=%dms video-codec=%s sawVoError=%s diagnostics=%s", position, codec.isEmpty() ? "-" : codec, sawVideoOutputError, diagnosticSummary());
         } else {
             SpiderDebug.log("mpv-vo", "video output never configured position=%dms video-codec=%s sawVoError=%s", position, codec.isEmpty() ? "-" : codec, sawVideoOutputError);
+        }
+    }
+
+    /**
+     * 探针：**解码器起不来 ⇒ 视频轨一轨都没被选中 ⇒ 只有声音没图像**。
+     *
+     * <p>与 {@link #checkVideoOutputWatchdog()} 是**两种不同的**失败模式，分工：
+     * 那个判「VO 没起来」（判据 `vo-configured=false`）；这个判「VO 起来了、但解码器没起来」
+     * （判据 `sawDecodeError && vid=no`）。</p>
+     *
+     * <p>2026-09-17 真机（MiTV4-ANSM0 / sdk=23）实测命中的是**后者**，而前者三条早退全中
+     * ——位置没到 6s（分片大面积 404，1.5s 只推进 78ms）、`vo-configured=true`、`videoSize<=0`
+     * ⇒ 整条链路里一行 `mpv-vo` 都没有，失败模式完全不可见。这条探针就是为了让它可见。</p>
+     *
+     * <p>⚠️ **只报不做**：不触发回退/重建。回退方向（切 `hwdec=no` + `vo=gpu-next`？还是别的）
+     * 取决于"解码器为什么起不来"，先拿到带 `diagnostics=` 的日志再决定。</p>
+     */
+    private void checkVideoTrackWatchdog() {
+        if (videoTrackWatchdogReported || !initialized || !fileLoaded) return;
+        if (playerError != null || stopping || eofReached) return;
+        // mpv 自己报过「解码器起不来」才判；否则"还没选中视频轨"可能只是正常的起播过程。
+        if (!sawDecodeError) return;
+        if (fileLoadedAtElapsedRealtimeMs <= 0) return;
+        long sinceFileLoadedMs = SystemClock.elapsedRealtime() - fileLoadedAtElapsedRealtimeMs;
+        if (sinceFileLoadedMs < VIDEO_TRACK_WATCHDOG_MS) return;
+        // 给 mpv 的候选解码器重试留足时间后，仍然一轨都没选中 ⇒ 判定成立。
+        String vid = propertyStringOrInt("vid");
+        if (!isDisabledTrackChoice(vid)) return;
+        videoTrackWatchdogReported = true;
+        String failure = lastFailureLog == null ? "-" : MpvDiagnosticsPolicy.redactSensitive(lastFailureLog);
+        if (MpvDiagnosticsPolicy.allowsSynchronousProperties(MpvDiagnosticsPolicy.Request.ERROR_DETAILED, SpiderDebug.isEnabled())) {
+            SpiderDebug.log("mpv-no-video", "decoder failed and no video track selected sinceFileLoaded=%dms vid=%s voError=%s lastFailure=%s diagnostics=%s", sinceFileLoadedMs, vid, sawVideoOutputError, failure, diagnosticSummary());
+        } else {
+            SpiderDebug.log("mpv-no-video", "decoder failed and no video track selected sinceFileLoaded=%dms vid=%s voError=%s", sinceFileLoadedMs, vid, sawVideoOutputError);
         }
     }
 
@@ -3860,6 +3930,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         sawVideoOutputError = false;
         sawDrmError = false;
         videoOutputWatchdogReported = false;
+        videoTrackWatchdogReported = false;
+        videoSizeWithheldReported = false;
         lastFailureLog = null;
         lastEndFileReason = MPVLib.MpvEndFileReason.MPV_END_FILE_REASON_UNKNOWN;
         lastEndFileError = MPVLib.MpvError.MPV_ERROR_SUCCESS;

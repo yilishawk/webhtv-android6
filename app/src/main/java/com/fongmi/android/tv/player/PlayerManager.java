@@ -7083,7 +7083,18 @@ public class PlayerManager implements ParseCallback {
 
     private void markStartupCompletion(boolean ready, Tracks tracks) {
         if (tracks == null) return;
-        boolean hasVideo = tracks.containsType(C.TRACK_TYPE_VIDEO);
+        /*
+         * 2026-09-17 修正（真机取证）：这里原来用 tracks.containsType(C.TRACK_TYPE_VIDEO)，
+         * 而 Media3 的 containsType() 只回答「**有没有这一类轨道组**」，不回答「有没有被选中」。
+         * 于是当视频轨存在但没有任何解码器能起来时（mpv: vid=no，真机日志
+         * `tracks snapshot vid=no ... track[0] type=video rawSelected=false finalSelected=false`），
+         * hasVideo 仍然为 true，PlaybackStartupPolicy 直接返回 FIRST_FRAME ——
+         * 让下面那个本来就写好的 AUDIO_PLAYABLE 分支变成了**死代码**。
+         * 结果就是 UI 认定「已出画」，而实际上一帧都没有。
+         * 音频那一路刻意保持 containsType() 不动：多报一点音频只会让结果更保守（AUDIO_PLAYABLE），
+         * 而少报会退化成 NONE，反而更糟。
+         */
+        boolean hasVideo = hasSelectedTrackType(tracks, C.TRACK_TYPE_VIDEO);
         boolean hasAudio = tracks.containsType(C.TRACK_TYPE_AUDIO);
         PlaybackStartupPolicy.Completion completion = PlaybackStartupPolicy.resolve(ready, playerType == PlayerSetting.MPV, hasVideo, hasAudio);
         if (completion == PlaybackStartupPolicy.Completion.FIRST_FRAME) {
@@ -7093,6 +7104,20 @@ public class PlayerManager implements ParseCallback {
         } else if (completion == PlaybackStartupPolicy.Completion.AUDIO_PLAYABLE) {
             playbackTrace.mark(PlaybackTrace.Stage.AUDIO_PLAYABLE, "source=ready player=" + playerType);
         }
+    }
+
+    /**
+     * 「有某类轨道」必须理解成「该类轨道**被选中**」，不是「存在该类轨道组」。
+     *
+     * 注意取类型的方式是 {@code group.getType()}（返回 {@link C.TrackType}），
+     * {@code Tracks.Group} **没有** 公开的 {@code type} 字段 —— 2026-09-17 写错过一次，
+     * 编译报「找不到符号 变量 type」。
+     */
+    private static boolean hasSelectedTrackType(Tracks tracks, int type) {
+        for (Tracks.Group group : tracks.getGroups()) {
+            if (group.getType() == type && group.isSelected()) return true;
+        }
+        return false;
     }
 
     private void completeMpvDirectFirstFrame(int state) {
