@@ -945,7 +945,11 @@ public final class MpvConfigStore {
                 + "# Loaded by libmpv from files/mpv/mpv.conf. Keep Android-only output options in app code.\n"
                 + "\n"
                 + "profile=fast\n"
-                + "http-allow-redirect=yes\n"
+                // ytdl=no：本包**不含** yt-dlp/youtube-dl（APK 里连脚本引用都没有，实测确认），
+                // 所以 ytdl_hook 只可能失败，而它的失败会**顶掉真实错误** —— MPV_LOAD_FAILED 的
+                // message 会变成 "ytdl_hook: Subprocess failed: init"，把真正的失败原因（网络/格式/
+                // 解码）盖住。关掉它，日志里剩下的才是根因。
+                + "ytdl=no\n"
                 + "sub-ass=yes\n"
                 + "sub-ass-override=" + MpvSubtitleStylePolicy.ASS_OVERRIDE + "\n"
                 + "embeddedfonts=yes\n"

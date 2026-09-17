@@ -97,6 +97,11 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     // a 100 ms threshold hides the single-frame misses that accumulate into bursts.
     private static final long SLOW_MPV_NATIVE_CALL_THRESHOLD_MS = 16;
     private static final long END_FILE_VALIDATION_DELAY_MS = 800;
+    /**
+     * 起播后播到这个位置、视频输出还没配起来，就判定"只有声音没图像"，报一次诊断。
+     * 6s 是刻意的：太短会在慢网/慢解码上误报（还在缓冲、第一帧没到），太长则用户已经盯够了黑屏。
+     */
+    private static final long VIDEO_OUTPUT_WATCHDOG_MS = 6000;
     private static final long LOAD_START_RETRY_DELAY_MS = 1000;
     private static final long POST_RESTART_TRACK_REFRESH_DELAY_MS = 120;
     private static final long INITIAL_TRACK_SELECTION_LOAD_TIMEOUT_MS = 15000;
@@ -268,6 +273,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private boolean sawDecodeError;
     private boolean sawVideoOutputError;
     private boolean sawDrmError;
+    private boolean videoOutputWatchdogReported;
     private boolean cachedCacheIdle;
     private boolean cachedCacheUnderrun;
     private boolean cachedCacheBof;
@@ -3281,6 +3287,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         updatePreloadCacheOverlay();
         if (currentLikelyHls) requestHlsPreload(cachedPositionMs);
         refreshCacheState();
+        checkVideoOutputWatchdog();
         invalidateState();
         startStateRefresh();
     }
@@ -3364,6 +3371,43 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         if (sawNoAvData || recentLogsContain("no audio or video data played")) return ERROR_NO_AV_DATA + detailSuffix("no audio or video data played");
         if (sawInvalidData || sawPngVideo || recentLogsContain("invalid data found when processing input", "video: png")) return ERROR_INVALID_MEDIA_DATA + detailSuffix("invalid media data");
         return ERROR_DECODE_FAILED + detailSuffix("no playable audio/video output");
+    }
+
+    /**
+     * 「只有声音没图像」的取证探针（**只读、只打一次**，不改变任何播放行为）。
+     *
+     * <p>为什么需要它：{@link #isFailedLoadedMedia()} 只在 {@code end-file} 事件里被问过
+     * （见 {@code handleEndFile}），而 VO 起不来时 mpv **不一定**发 end-file —— 音频可以一直
+     * 播下去。于是「只有声音、没画面、没报错、日志里什么都没有」能无限期持续，正是用户报的症状。
+     * 这里在周期刷新里补一次判定，把「VO 到底有没有配起来」钉进日志。</p>
+     *
+     * <p>判据用 {@code vo-configured}（VO 是否已配置并收帧），**不用** {@code videoSize} ——
+     * 后者来自 demux / {@code video-params}，视频轨解出来就有值，**证明不了画面渲染过**。
+     * 反过来必须先要求「有视频轨」（{@code videoSize} 已知）：纯音频文件 {@code vo-configured}
+     * 同样是 false，不排除掉就会把「本来就没视频」误报成「VO 挂了」。</p>
+     *
+     * <p>属性读不到时 {@code booleanProperty} 走兜底 {@code true} ⇒ 不报。
+     * **失败方向是静默**：mpv 版本不认这个属性也不会刷假警报。</p>
+     *
+     * <p>⚠️ 本轮**只报不做**：判定到「VO 没起来」时只写日志，不触发重建/回退。
+     * 因为回退方向取决于失败在哪一层（VO 初始化 / 解码 / 轨道选择），
+     * 先拿到日志再决定放开哪一个 —— 一次只改一个变量。</p>
+     */
+    private void checkVideoOutputWatchdog() {
+        if (videoOutputWatchdogReported || !initialized || !fileLoaded) return;
+        if (playerError != null || stopping || eofReached) return;
+        long position = positionMs();
+        if (position < VIDEO_OUTPUT_WATCHDOG_MS) return;
+        // 先置位再判定：每个媒体项最多做一次属性读，之后不再重复付这个代价。
+        videoOutputWatchdogReported = true;
+        if (booleanProperty("vo-configured", true)) return;
+        if (videoSize.width <= 0 || videoSize.height <= 0) return;
+        String codec = stringProperty("video-codec", "");
+        if (MpvDiagnosticsPolicy.allowsSynchronousProperties(MpvDiagnosticsPolicy.Request.ERROR_DETAILED, SpiderDebug.isEnabled())) {
+            SpiderDebug.log("mpv-vo", "video output never configured position=%dms video-codec=%s sawVoError=%s diagnostics=%s", position, codec.isEmpty() ? "-" : codec, sawVideoOutputError, diagnosticSummary());
+        } else {
+            SpiderDebug.log("mpv-vo", "video output never configured position=%dms video-codec=%s sawVoError=%s", position, codec.isEmpty() ? "-" : codec, sawVideoOutputError);
+        }
     }
 
     private IOException classifyLoadError(@Nullable Throwable cause, @Nullable String detail) {
@@ -3815,6 +3859,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         sawDecodeError = false;
         sawVideoOutputError = false;
         sawDrmError = false;
+        videoOutputWatchdogReported = false;
         lastFailureLog = null;
         lastEndFileReason = MPVLib.MpvEndFileReason.MPV_END_FILE_REASON_UNKNOWN;
         lastEndFileError = MPVLib.MpvError.MPV_ERROR_SUCCESS;
@@ -4751,7 +4796,11 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         parts.add("video-codec=" + stringProperty("video-codec", ""));
         parts.add("audio-codec=" + stringProperty("audio-codec", ""));
         parts.add("hwdec=" + stringProperty("hwdec-current", ""));
-        parts.add("vo=" + stringProperty("current-vo", stringProperty("vo-configured", "")));
+        // current-vo 拿不到时**不要**退回 vo-configured：那是个布尔值，会打出 "vo=false"，
+        // 分不清是「VO 起不来」还是「VO 还没配」——正是排「只有声音没图像」时最需要分清的一件事。
+        // 拆成两个字段，各自只表达自己的语义。
+        parts.add("vo=" + firstNonEmpty(stringProperty("current-vo", ""), "-"));
+        parts.add("vo-configured=" + booleanProperty("vo-configured", false));
         parts.add("shader=" + (lutShader == null ? "-" : lutShader.diagnostics()));
         parts.add("end-file=" + endFileReasonName(lastEndFileReason) + "/" + mpvErrorName(lastEndFileError) + "(" + lastEndFileError + ")");
         if (!TextUtils.isEmpty(lastEndFileErrorText)) parts.add("end-file-text=" + MpvDiagnosticsPolicy.redactSensitive(lastEndFileErrorText));
