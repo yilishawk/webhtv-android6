@@ -955,6 +955,13 @@ public final class MpvConfigStore {
                 + "embeddedfonts=yes\n"
                 + "sub-fix-timing=yes\n"
                 + "sub-use-margins=yes\n"
+                // sub-font-provider **保持带前缀**：本包那份 libmpv 里查不到 `sub-font-provider`
+                // 这个字面量，但同样查不到 `sub-font`/`sub-color`/`sub-border-size`，而
+                // `font`/`font-size`/`color`/`border-size`/`font-provider` 都在同一张 64 字节步长的
+                // 字段表里 ⇒ 这是 mpv 的**子结构体**：字段名不带前缀，全名由父组在运行时拼
+                // （二进制里有 `%s-%s`）。同构的已知对照组是 `sub-filter-sdh`（mpv 确定存在）——
+                // 它也只以裸字段 `sdh` 出现。⇒ 写 `sub-` 前缀是对的，去掉前缀才会真的报错。
+                // 判据与工具：`apk-check/mpv_option_probe.py` 的 substruct 规则。
                 + "sub-font-provider=fontconfig\n"
                 + "volume-max=100\n";
     }

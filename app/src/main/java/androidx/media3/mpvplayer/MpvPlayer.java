@@ -282,6 +282,24 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private boolean videoOutputWatchdogReported;
     private boolean videoTrackWatchdogReported;
     private boolean videoSizeWithheldReported;
+    /**
+     * 是否已经把「解码器失败且无视频轨」通知出去过（每个媒体项最多一次）。
+     * 与 {@link #videoTrackWatchdogReported} 分开：那个控制**日志只打一次**，
+     * 这个控制**回调只发一次**——两者的开关条件不同（日志还要求开了详细诊断）。
+     */
+    private boolean videoTrackFailureNotified;
+    /**
+     * 第一条**解码层**失败日志（只记第一条，永不覆盖）。
+     *
+     * <p>2026-09-19 修正：原来只有 {@code lastFailureLog}，而它对**所有**含 {@code failed}/{@code error}
+     * 的行都覆盖。真机（电视 `log-20`）上表现为：真正的
+     * {@code ffmpeg/video: h264_mediacodec: MediaCodec 0x0 failed to start} 被之后连串的
+     * {@code hls: Failed to open segment 39 of playlist 0} 顶掉，
+     * 于是 {@code mpv-no-video} 的 {@code lastFailure=} 显示成 404
+     * ⇒ **极易误判成「404 导致黑屏」**。解码层的第一条失败才是判据。</p>
+     */
+    @Nullable
+    private String firstDecodeFailureLog;
     private boolean cachedCacheIdle;
     private boolean cachedCacheUnderrun;
     private boolean cachedCacheBof;
@@ -292,6 +310,16 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private boolean directAudioApplied;
     private boolean audioTrackManuallySelected;
     private BiConsumer<Integer, Integer> videoSizeProbeListener;
+    /**
+     * 「解码器全起不来 ⇒ 视频轨一轨都没选中」的通知口（2026-09-19 新增）。
+     *
+     * <p>为什么必须是回调、而不是让上层轮询：这个判定的唯一现场在 {@link #checkVideoTrackWatchdog()}
+     * 里，而上层 {@code PlayerManager} 需要**在判定成立的同一刻**决定要不要回退输出路径。
+     * 轮询会引入「判定已成立但上层还没看见」的窗口，而黑屏期间用户随时可能按返回。</p>
+     *
+     * <p>与 {@link #videoSizeProbeListener} 同构：都从 {@code MpvPlayerEngine} 注入。</p>
+     */
+    private Runnable videoTrackFailureListener;
     private boolean trackRefreshScheduled;
     private boolean trackRefreshPrioritized;
     private int trackRefreshCoalescedEvents;
@@ -600,6 +628,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         released = true;
         startMainThreadWatchdog();
         videoSizeProbeListener = null;
+        videoTrackFailureListener = null;
         cancelScheduledTrackRefresh();
         mainHandler.removeCallbacks(mediaReplacementStopTimeoutRunnable);
         mediaReplacementCoordinator.reset();
@@ -1858,6 +1887,16 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         videoSizeProbeListener = listener;
     }
 
+    /**
+     * 注册「解码器全失败 ⇒ 无视频轨被选中」的通知口。每个媒体项最多触发一次。
+     *
+     * <p>⚠️ 回调可能在**非主线程**触发（{@code checkVideoTrackWatchdog()} 由周期刷新调用），
+     * 实现方必须自己切回主线程再做重建/回退。</p>
+     */
+    public void setVideoTrackFailureListener(@Nullable Runnable listener) {
+        videoTrackFailureListener = listener;
+    }
+
     public void setInitialOsdSurfaceRequested(boolean requested) {
         initialOsdSurfaceRequested = requested;
         if (mediaItem != null) return;
@@ -2395,7 +2434,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         for (MediaItem.SubtitleConfiguration sub : mediaItem.localConfiguration.subtitleConfigurations) {
             Uri uri = sub.uri;
             try {
-                mpvCommand(new String[]{"sub-add", playableUri(uri), "auto"});
+                mpvCommand(new String[]{"sub-add",
+                        MpvUrlEncodingPolicy.encodeForMpv(playableUri(uri)), "auto"});
             } catch (Throwable ignored) {
             }
         }
@@ -3035,16 +3075,24 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             startOption = "start=" + String.format(Locale.US, "%.3f",
                     initialSeekPositionMs / SECONDS_TO_MS);
         }
+        // 只有 mpv 这条链路会把 URL 原样交给 C 层：libcurl 8.x 的 URL 解析器拒收非 ASCII
+        // 与空格（CURLE_URL_MALFORMAT ⇒ MPV_LOAD_FAILED），而 ExoPlayer 侧 OkHttp 会自行
+        // 规范化。纯 ASCII 时这里是恒等返回，行为不变。见 MpvUrlEncodingPolicy。
+        String loadableUri = MpvUrlEncodingPolicy.encodeForMpv(currentPlayableUri);
+        if (loadableUri != currentPlayableUri && shouldCollectDebugDetails()) {
+            PlaybackTrace.log("mpv", playbackTraceId, "load url percent-encoded source=%s",
+                    MpvDiagnosticsPolicy.sourceSummary(currentPlayableUri));
+        }
         if (currentLikelyHls) {
-            mpvCommand(new String[]{"loadfile", currentPlayableUri, "replace", "-1",
+            mpvCommand(new String[]{"loadfile", loadableUri, "replace", "-1",
                     appendLoadOption(HLS_LOAD_OPTIONS, startOption)});
         } else if (currentLikelyDash) {
-            mpvCommand(new String[]{"loadfile", currentPlayableUri, "replace", "-1",
+            mpvCommand(new String[]{"loadfile", loadableUri, "replace", "-1",
                     appendLoadOption(DASH_LOAD_OPTIONS, startOption)});
         } else if (!startOption.isEmpty()) {
-            mpvCommand(new String[]{"loadfile", currentPlayableUri, "replace", "-1", startOption});
+            mpvCommand(new String[]{"loadfile", loadableUri, "replace", "-1", startOption});
         } else {
-            mpvCommand(new String[]{"loadfile", currentPlayableUri, "replace"});
+            mpvCommand(new String[]{"loadfile", loadableUri, "replace"});
         }
         if (shouldCollectDebugDetails() && !startOption.isEmpty()) {
             PlaybackTrace.log("mpv", playbackTraceId,
@@ -3457,8 +3505,26 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
      * ——位置没到 6s（分片大面积 404，1.5s 只推进 78ms）、`vo-configured=true`、`videoSize<=0`
      * ⇒ 整条链路里一行 `mpv-vo` 都没有，失败模式完全不可见。这条探针就是为了让它可见。</p>
      *
-     * <p>⚠️ **只报不做**：不触发回退/重建。回退方向（切 `hwdec=no` + `vo=gpu-next`？还是别的）
-     * 取决于"解码器为什么起不来"，先拿到带 `diagnostics=` 的日志再决定。</p>
+     * <p>2026-09-19 升级：**从「只报不做」改成「报一次 + 通知一次」**。
+     * 原来刻意不动作，是因为回退方向取决于"解码器为什么起不来"，要先拿到日志。
+     * 真机日志（电视 `log-20`）已经拿到了，结论是：
+     * <b>失败发生在零拷贝直通路径（`vo=mediacodec_embed` + `hwdec=mediacodec`）上，
+     * 而这条路径没有任何退路</b>——`mediacodec_embed` 只吃 hw 帧，软解结构性不可用。
+     * 因此正确的动作是把输出切回 `vo=gpu` + `hwdec=mediacodec,mediacodec-copy`（手机侧验证可用）。
+     * 具体回退由 {@link #videoTrackFailureListener} 的实现方决定（它知道当前是不是 surfaceDirect）。</p>
+     *
+     * <p>⚠️ **通知与日志解耦**：日志仍受 {@code shouldCollectDebugDetails()}/诊断策略约束，
+     * 但**通知不受**——回退不能依赖"用户开了详细日志"。两者各有独立的一次性开关。</p>
+     *
+     * <p>⭐⭐ 2026-09-19 真机复核（`log-20` 逐行读过，**这条探针确实跑了**）：
+     * {@code 09:04:57.465 mpv-no-video: decoder failed and no video track selected
+     * sinceFileLoaded=2844ms vid=no voError=false lastFailure=…segment 39…}。
+     * 判定完全成立、日志也打出来了，**但当时这条探针"只报不做"** ⇒ 用户看到的仍是黑屏有声。
+     * 同一份日志里 {@code grep -E "rebuild|fallback"} **零命中** ⇒ 确认从头到尾**没有任何重建**。
+     * ⇒ **用户可见故障的唯一根因就是"报了不做"**，不是判定失败、也不是匹配串问题。</p>
+     *
+     * <p>⚠️ 诊断留痕另有一个缺陷（同一轮已修）：上面那行的 {@code lastFailure=} 指向的是
+     * **无关的 HLS 404**，真正的解码层失败被顶掉了。修法见 {@link #firstDecodeFailureLog}。</p>
      */
     private void checkVideoTrackWatchdog() {
         if (videoTrackWatchdogReported || !initialized || !fileLoaded) return;
@@ -3472,11 +3538,33 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         String vid = propertyStringOrInt("vid");
         if (!isDisabledTrackChoice(vid)) return;
         videoTrackWatchdogReported = true;
-        String failure = lastFailureLog == null ? "-" : MpvDiagnosticsPolicy.redactSensitive(lastFailureLog);
+        notifyVideoTrackFailure(sinceFileLoadedMs, vid);
+        if (!shouldCollectDebugDetails()) return;
+        // 优先用**解码层的第一条**失败：lastFailureLog 会被之后的 HLS 404 顶掉（2026-09-19 修正）。
+        String failure = firstDecodeFailureLog != null
+                ? MpvDiagnosticsPolicy.redactSensitive(firstDecodeFailureLog)
+                : lastFailureLog == null ? "-" : MpvDiagnosticsPolicy.redactSensitive(lastFailureLog);
         if (MpvDiagnosticsPolicy.allowsSynchronousProperties(MpvDiagnosticsPolicy.Request.ERROR_DETAILED, SpiderDebug.isEnabled())) {
-            SpiderDebug.log("mpv-no-video", "decoder failed and no video track selected sinceFileLoaded=%dms vid=%s voError=%s lastFailure=%s diagnostics=%s", sinceFileLoadedMs, vid, sawVideoOutputError, failure, diagnosticSummary());
+            SpiderDebug.log("mpv-no-video", "decoder failed and no video track selected sinceFileLoaded=%dms vid=%s voError=%s decodeFailure=%s lastFailure=%s diagnostics=%s", sinceFileLoadedMs, vid, sawVideoOutputError, failure, lastFailureLog == null ? "-" : MpvDiagnosticsPolicy.redactSensitive(lastFailureLog), diagnosticSummary());
         } else {
-            SpiderDebug.log("mpv-no-video", "decoder failed and no video track selected sinceFileLoaded=%dms vid=%s voError=%s", sinceFileLoadedMs, vid, sawVideoOutputError);
+            SpiderDebug.log("mpv-no-video", "decoder failed and no video track selected sinceFileLoaded=%dms vid=%s voError=%s decodeFailure=%s", sinceFileLoadedMs, vid, sawVideoOutputError, failure);
+        }
+    }
+
+    /**
+     * 把「解码器失败且无视频轨」通知给上层，每个媒体项最多一次。
+     *
+     * <p>回调在周期刷新线程上触发 ⇒ 实现方自己负责切主线程。异常一律吞掉：
+     * 通知失败绝不能反过来影响播放器内部状态。</p>
+     */
+    private void notifyVideoTrackFailure(long sinceFileLoadedMs, String vid) {
+        if (videoTrackFailureNotified) return;
+        videoTrackFailureNotified = true;
+        Runnable listener = videoTrackFailureListener;
+        if (listener == null) return;
+        try {
+            listener.run();
+        } catch (Throwable ignored) {
         }
     }
 
@@ -3585,10 +3673,43 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         if (lower.contains("invalid data found when processing input")) sawInvalidData = true;
         if (lower.contains("video: png")) sawPngVideo = true;
         if (isNetworkFailureLog(lower)) sawNetworkError = true;
-        if (isDecodeFailureLog(lower)) sawDecodeError = true;
+        boolean decodeFailure = isDecodeFailureLog(lower) || isMediaCodecStartFailureLog(lower);
+        if (decodeFailure) sawDecodeError = true;
         if (isVideoOutputFailureLog(lower)) sawVideoOutputError = true;
         if (isDrmFailureLog(lower)) sawDrmError = true;
+        /*
+         * 2026-09-19 修正：解码层的第一条失败单独留档，且**永不覆盖**。
+         * 原来的 lastFailureLog 会被之后任何含 failed/error 的行顶掉（真机上就是连串的 HLS 404），
+         * 于是诊断里那句 lastFailure= 反而指向了无关的 404。见字段注释。
+         */
+        if (decodeFailure && firstDecodeFailureLog == null) firstDecodeFailureLog = line;
         if (sawNoAvData || sawInvalidData || sawPngVideo || sawNetworkError || sawDecodeError || sawVideoOutputError || sawDrmError || lower.contains("failed") || lower.contains("error")) lastFailureLog = line;
+    }
+
+    /**
+     * FFmpeg 的 MediaCodec 包装层起不来。原文是 {@code MediaCodec %p failed to start}
+     * （`%p` 已被证实是**指针**，见 `apk-check/log-analysis/binstr.py` 对 `libmvcodec.so` 的取证）。
+     *
+     * <p>⚠️ 它与 {@link #isDecodeFailureLog} 分开写，是因为**措辞**不同（这条带 `mediacodec`），
+     * 但两者在 {@link #markFailureSignal} 里是**并列**的：都置 {@code sawDecodeError}、
+     * 都参与挑 {@code firstDecodeFailureLog}。</p>
+     *
+     * <p>⚠️ **它不影响真机 `log-20` 的对外错误码**：那份日志里 `sawDecodeError` 早已被
+     * `vd: Decoder init failed for h264` 置位，这条只是让 {@code firstDecodeFailureLog}
+     * 取到更靠前的 `MediaCodec 0x0 failed to start`（更好的留痕）。</p>
+     *
+     * <p>⚠️ 但它**理论上会**影响分类：{@code sawDecodeError} 喂给
+     * {@link #nativeEndFileErrorCode(int, int, String)}（{@code if (sawDecodeError) return
+     * ERROR_DECODE_FAILED;}）。若某设备**只**打 `MediaCodec … failed to start` 而没有
+     * `Decoder init failed`，错误码就会从「HLS 播放失败 / 无音视频数据」变成
+     * `ERROR_DECODE_FAILED` —— 这是**有意的、也更准确**的，且附带让
+     * {@code PlayerManager} 里按该前缀门控的 `retryMpvSurfaceDirectFailure` 变得可达。</p>
+     *
+     * <p>⚠️ 分类优先级不受影响：DRM → VO → 网络都排在 {@code sawDecodeError} **之前**。</p>
+     */
+    private static boolean isMediaCodecStartFailureLog(String lower) {
+        return lower.contains("failed to start")
+                && (lower.contains("mediacodec") || lower.contains("failed to configure"));
     }
 
     private void resetCacheState() {
@@ -3874,6 +3995,26 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private boolean isDecodeFailureLog(String lower) {
         return lower.contains("could not open codec")
+                /*
+                 * ⭐ 2026-09-19 二进制取证补漏：mpv 的**原文**是
+                 *     Failed to initialize a decoder for codec '%s'.
+                 * （来源 `libmpv.so` → `../filters/f_decoder_wrapper.c:1064`，标签 `vd:`，
+                 *   用 `apk-check/log-analysis/binstr.py` 取到）。
+                 *
+                 * ⛔ 下面那行 `"failed to initialize decoder"` **少了中间的 "a "**，
+                 *    对两个二进制实测 **0 命中** ⇒ **死模式，从来没匹配过任何东西**。
+                 *    （`grep -a -c "failed to initialize decoder" libmpv.so libmvcodec.so` → 0 / 0；
+                 *      `grep -a -c "initialize a decoder" libmpv.so` → 1。注意 grep 大小写敏感，
+                 *      查小写全串会得 0，别据此以为原文不存在。）
+                 *
+                 * ⚠️ **但它不是本次黑屏的原因** —— 真机 `log-20` 里真正置位 `sawDecodeError` 的是
+                 *    另一条模式 `"decoder init failed"`，命中的行是 `vd: Decoder init failed for h264`
+                 *    （同一份日志 09:04:54.585）。看门狗因此**正常触发**了。
+                 *    ⇒ 这是一颗**被兄弟模式遮住的哑弹**：改动任何一条模式前，都要先确认
+                 *      "真机上到底是哪一行、哪条模式命中的"，**别只看代码推断**。
+                 */
+                || lower.contains("failed to initialize a decoder")
+                || lower.contains("could not set decoder parameters")
                 || lower.contains("failed to initialize decoder")
                 || lower.contains("failed to init decoder")
                 || lower.contains("decoder init failed")
@@ -3932,6 +4073,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         videoOutputWatchdogReported = false;
         videoTrackWatchdogReported = false;
         videoSizeWithheldReported = false;
+        videoTrackFailureNotified = false;
+        firstDecodeFailureLog = null;
         lastFailureLog = null;
         lastEndFileReason = MPVLib.MpvEndFileReason.MPV_END_FILE_REASON_UNKNOWN;
         lastEndFileError = MPVLib.MpvError.MPV_ERROR_SUCCESS;

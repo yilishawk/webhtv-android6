@@ -26,6 +26,10 @@ public class MpvConfigStoreTest {
 
         assertTrue(config.contains("sub-ass-override=scale\n"));
         assertFalse(config.contains("sub-ass-override=yes\n"));
+        // sub-font-provider **带前缀**：本包 libmpv 里没有 `sub-font-provider` 字面量，但也没有
+        // `sub-font`/`sub-color`，而裸字段 `font`/`font-provider` 都在同一张 64 字节步长的字段表里
+        // ⇒ mpv 的**子结构体**机制（全名 = 父组 + "-" + 字段，运行时拼；二进制里有 `%s-%s`）。
+        // 已知对照：`sub-filter-sdh` 也只以裸字段 `sdh` 出现。⇒ 断言必须钉住**带前缀**的名字。
         assertTrue(config.contains("sub-font-provider=fontconfig\n"));
         assertFalse(config.contains("sub-font-provider=none\n"));
     }

@@ -68,11 +68,19 @@ public class MpvPlayerEngine implements PlayerEngine {
     private boolean initialSubtitleSurfaceRequested;
     private String initialSubtitleTrackId;
     private final BiConsumer<Integer, Integer> videoSizeProbeListener;
+    /**
+     * 「解码器全起不来 ⇒ 无视频轨」的通知口，直接透传给 {@link MpvPlayer}。
+     * 由 {@code PlayerManager} 决定要不要回退输出路径（见 `MpvPlayer.checkVideoTrackWatchdog()`）。
+     */
+    private final Runnable videoTrackFailureListener;
     private int decode;
 
-    public MpvPlayerEngine(int decode, Player.Listener listener, BiConsumer<Integer, Integer> videoSizeProbeListener) {
+    public MpvPlayerEngine(int decode, Player.Listener listener,
+                           BiConsumer<Integer, Integer> videoSizeProbeListener,
+                           Runnable videoTrackFailureListener) {
         this.decode = decode;
         this.videoSizeProbeListener = videoSizeProbeListener;
+        this.videoTrackFailureListener = videoTrackFailureListener;
         resetDv7HandlingForNewItem();
         this.player = buildPlayer(listener);
     }
@@ -827,6 +835,7 @@ public class MpvPlayerEngine implements PlayerEngine {
             player.updateAutomaticPreloadControl(true, false, false);
         }
         player.setVideoSizeProbeListener(videoSizeProbeListener);
+        player.setVideoTrackFailureListener(videoTrackFailureListener);
         player.addListener(listener);
         return player;
     }

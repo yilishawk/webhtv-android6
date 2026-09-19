@@ -82,7 +82,7 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="match_parent"
                                 android:scaleType="centerCrop"
-                                android:src="@drawable/artwork"
+                                android:src="@drawable/artwork_cover"
                                 app:shapeAppearanceOverlay="@style/ShapeAppearance.WebHTV.AudioCover"
                                 app:strokeColor="@color/white_20"
                                 app:strokeWidth="1dp" />

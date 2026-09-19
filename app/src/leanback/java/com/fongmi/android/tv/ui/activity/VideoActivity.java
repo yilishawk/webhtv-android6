@@ -3426,15 +3426,19 @@ public class VideoActivity extends PlaybackActivity implements CustomKeyDownVod.
     }
 
     private void loadArtwork(String url, String owner) {
+        // 占位图用 artwork_cover（512×512）而不是 artwork（1920×1080）：
+        // audioCover 是 174dp 的圆，centerCrop 只取中心方块，全尺寸解码等于白占 7.91 MB ——
+        // 这正是真机 OutOfMemoryError 的最后一根稻草。artwork_cover 就是 artwork 的 512×512
+        // 中心裁切，两者画面完全一致；artwork 仍留给全屏兜底（Glide error）用途。
         mArtworkRequestOwner = owner;
         String colorKey = Objects.toString(owner, "") + "|" + Objects.toString(url, "");
         if (TextUtils.isEmpty(url)) {
             mBinding.exo.setDefaultArtwork(null);
-            mBinding.audioCover.setImageResource(R.drawable.artwork);
+            mBinding.audioCover.setImageResource(R.drawable.artwork_cover);
             updateAudioArtworkColor(colorKey, null);
             return;
         }
-        mBinding.audioCover.setImageResource(R.drawable.artwork);
+        mBinding.audioCover.setImageResource(R.drawable.artwork_cover);
         int size = ResUtil.dp2px(256);
         ImgUtil.load(this, url, size, size, new CustomTarget<>() {
             @Override
@@ -3449,7 +3453,7 @@ public class VideoActivity extends PlaybackActivity implements CustomKeyDownVod.
             public void onLoadFailed(@Nullable Drawable errorDrawable) {
                 if (!TextUtils.equals(mArtworkRequestOwner, owner)) return;
                 mBinding.exo.setDefaultArtwork(errorDrawable);
-                if (errorDrawable == null) mBinding.audioCover.setImageResource(R.drawable.artwork);
+                if (errorDrawable == null) mBinding.audioCover.setImageResource(R.drawable.artwork_cover);
                 else mBinding.audioCover.setImageDrawable(errorDrawable);
                 scheduleAudioArtworkColorUpdate(owner, colorKey, errorDrawable);
             }

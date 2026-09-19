@@ -246,6 +246,20 @@ public class PlayerManager implements ParseCallback {
     private boolean mpvAutoOutputEvaluationScheduled;
     private boolean mpvExplicitSubtitlePreference;
     private boolean mpvAutoGpuPinnedForSession;
+    /**
+     * ⭐⭐⭐⭐⭐ 「解码器全起不来 ⇒ 无视频轨」之后**本会话**不再走零拷贝直通
+     * （2026-09-19 新增，真机 `log-20` 定案）。
+     *
+     * <p>为什么不复用 {@link #mpvAutoGpuPinnedForSession}：那个还会被 Dolby Vision 的
+     * `dolby-vision-hw-supported` 分支置位，而那个分支恰恰是**应该**走 surfaceDirect 的。
+     * 在 {@code evaluateMpvAutoOutput()} 里复用它会让 DV 支持的片子被误锁在 gpu 上。
+     * 这个标志语义单一：**只表示"零拷贝路径在这台设备上已经证实不可用"**。</p>
+     *
+     * <p>⚠️ 它同时兼任「只回退一次」的闸门：置位即表示已经动作过。
+     * 生命周期是**会话级**（在 {@code resetMpvOutputRuntime()} 里清），
+     * 这样同一部剧的下一集直接以 gpu 起播，不会再黑屏 2.8 秒。</p>
+     */
+    private boolean mpvNoVideoGpuPinnedForSession;
     private boolean mpvAutoVulkanPinnedForItem;
     private boolean mpvAutoVulkanDisabledForItem;
     private boolean mpvSurfaceFallbackTried;
@@ -364,6 +378,7 @@ public class PlayerManager implements ParseCallback {
         ijkRuntimeManualOverride = false;
         pendingIjkRuntimeFallbackReparse = false;
         mpvAutoGpuPinnedForSession = false;
+        mpvNoVideoGpuPinnedForSession = false;
         mpvAutoVulkanPinnedForItem = false;
         mpvAutoVulkanDisabledForItem = false;
         if (engine == null) return;
@@ -1218,6 +1233,7 @@ public class PlayerManager implements ParseCallback {
         stopNativeAudioSession();
         clearDanmaku("clear_media_items");
         mpvAutoGpuPinnedForSession = false;
+        mpvNoVideoGpuPinnedForSession = false;
         player.clearMediaItems();
     }
 
@@ -4631,7 +4647,7 @@ public class PlayerManager implements ParseCallback {
         App.removeCallbacks(runnable);
         Boolean effectiveSurfaceDirectOverride = surfaceDirectOverride;
         if (effectiveSurfaceDirectOverride == null
-                && mpvAutoGpuPinnedForSession
+                && (mpvAutoGpuPinnedForSession || mpvNoVideoGpuPinnedForSession)
                 && MpvPerformanceSetting.getOutputMode() == MpvPerformanceSetting.OUTPUT_AUTO) {
             effectiveSurfaceDirectOverride = false;
         }
@@ -4676,7 +4692,7 @@ public class PlayerManager implements ParseCallback {
                 videoEffectsActive || videoEffectsDirty || MpvPerformanceSetting.isInterpolation()
                         || lutAllowed && LutSetting.isEnabled(),
                 MpvConfigStore.hasGpuVideoProcessing());
-        if (mpvAutoGpuPinnedForSession
+        if ((mpvAutoGpuPinnedForSession || mpvNoVideoGpuPinnedForSession)
                 && MpvPerformanceSetting.getOutputMode() == MpvPerformanceSetting.OUTPUT_AUTO) {
             autoDirectEligible = false;
         }
@@ -4692,6 +4708,7 @@ public class PlayerManager implements ParseCallback {
     private void resetMpvOutputRuntime() {
         resetMpvOutputEvaluationState();
         mpvAutoGpuPinnedForSession = false;
+        mpvNoVideoGpuPinnedForSession = false;
         mpvAutoVulkanPinnedForItem = false;
         mpvAutoVulkanDisabledForItem = false;
         lastMpvFrameTimingLogMs = 0;
@@ -4785,6 +4802,30 @@ public class PlayerManager implements ParseCallback {
                 dolbyVisionSupport,
                 dolbyVision ? videoDetails.dolbyVisionProfile() : C.INDEX_UNSET,
                 dv7Hdr10FallbackEnabled);
+        /*
+         * ⛔ 2026-09-19（真机 `log-20` 定案）：这里**必须**挡住"评估把输出又拉回 surfaceDirect"。
+         *
+         * 原因：回退是在 MpvPlayer 的看门狗里触发的，而 rebuildAndRestartMpv() 结尾会调
+         * scheduleMpvAutoOutputEvaluation()。此时 tracks/宽高都已就绪，MpvAutoOutputPolicy
+         * 会照常返回 eligible=true ⇒ transition=ENTER_SURFACE_DIRECT ⇒ 重建回 mediacodec_embed
+         * ⇒ 再次黑屏 ⇒ **无限重建循环**（每次约 2.8 秒）。
+         *
+         * 只在 OUTPUT_AUTO 下挡：用户显式选「电视直出」时应当尊重用户选择，不静默改行为。
+         *
+         * ⚠️ 两个否决理由缺一不可：
+         *  - `no-video-gpu-pinned`：看门狗已经证明这条路径在这台设备上起不来解码器（事后）。
+         *  - `hwdec-copy-requested`：用户把「硬解路径」选了兼容复制（事前）。这条**不能只靠**
+         *    MpvPerformanceSetting.shouldUseSurfaceDirect() —— 它只覆盖「引擎自己决定」那条路，
+         *    而这里 :4857 是 PlayerManager **显式** rebuildAndRestartMpv(true)，会绕过它。
+         *    （`MpvPlayerEngine` 的 override 分支 `surfaceDirectOverride && decode == HARD` 不看 hwdec。）
+         */
+        if (decision.eligible()
+                && MpvPerformanceSetting.getOutputMode() == MpvPerformanceSetting.OUTPUT_AUTO
+                && (mpvNoVideoGpuPinnedForSession
+                || MpvPerformanceSetting.getHwdecMode() == MpvPerformanceSetting.HWDEC_COPY)) {
+            decision = new MpvAutoOutputPolicy.Decision(false, mpvNoVideoGpuPinnedForSession
+                    ? "no-video-gpu-pinned" : "hwdec-copy-requested");
+        }
         int dolbyVisionProfile = dolbyVision
                 ? videoDetails.dolbyVisionProfile() : C.INDEX_UNSET;
         boolean currentlyVulkan = mpv.isVulkanRenderer();
@@ -4941,6 +4982,51 @@ public class PlayerManager implements ParseCallback {
         return rebuildAndRestartMpv(false, "surface-direct-failure");
     }
 
+    /**
+     * ⭐⭐⭐⭐⭐ 零拷贝直通路径「起不来解码器」的兜底回退（2026-09-19，真机 `log-20` 定案）。
+     *
+     * <p>为什么需要这个、以及为什么它和 {@link #retryMpvSurfaceDirectFailure(PlaybackException)}
+     * 不能合并：</p>
+     *
+     * <p>那条路要求**收到 {@link PlaybackException}**。但 `vo=mediacodec_embed` + `hwdec=mediacodec`
+     * 起不来时，mpv 只是把视频轨丢掉（`track[0] rawSelected=false finalSelected=false`、
+     * `vid=no`、`withheld video size … reason=no-selected-video-track`），会话正常结束：
+     * `end-file reason=stop(2) error=success(0)`、`voError=false`。
+     * ⇒ **异常永远不来**，那条回退一次都跑不到，用户看到的只有黑屏有声。</p>
+     *
+     * <p>真正的判定信号早就有了 —— {@code MpvPlayer.checkVideoTrackWatchdog()} 判的就是
+     * 「解码层报过错 + 最终没有选中视频轨」。以前它「只报不做」（注释写明等日志）。
+     * `log-20` 就是它等的证据，所以现在把它接上：看门狗判定成立 ⇒ 回调 ⇒ 这里回退一次。</p>
+     *
+     * <p>只回退一次（{@link #mpvNoVideoGpuPinnedForSession} 先置位再重建），
+     * 且该标志同时会挡住 {@link #evaluateMpvAutoOutput()} 把输出**又拉回** surfaceDirect ——
+     * 否则就是「重建 → 黑屏 → 2.8 秒后再重建」的死循环。</p>
+     */
+    private boolean retryMpvNoVideoFailure() {
+        if (!isMpv() || !(engine instanceof MpvPlayerEngine)) return false;
+        if (!isMpvSurfaceDirect()) return false;
+        if (mpvNoVideoGpuPinnedForSession) return false;
+        mpvNoVideoGpuPinnedForSession = true;
+        mpvAutoOutputEvaluated = true;
+        mpvOutputEvaluationSeq++;
+        PlaybackTrace.log("mpv-output", playbackTrace.current(),
+                "no selected video track after decode failure on direct path; fallback gpu once");
+        return rebuildAndRestartMpv(false, "no-video-fallback");
+    }
+
+    /**
+     * {@code MpvPlayer} 的看门狗回调入口。⚠️ 可能在**非主线程**触发（mpv 事件线程），
+     * 所有状态改动与重建都必须切回主线程再做。
+     */
+    private void onMpvVideoTrackFailure() {
+        App.post(() -> {
+            if (!retryMpvNoVideoFailure()) return;
+            if (SpiderDebug.isEnabled()) {
+                SpiderDebug.log("mpv-output", "no-video-fallback executed key=%s", getKey());
+            }
+        });
+    }
+
     private boolean retryMpvVulkanBackendFailure(PlaybackException error) {
         if (mpvVulkanFallbackTried || error == null
                 || !(engine instanceof MpvPlayerEngine mpv)
@@ -5011,7 +5097,7 @@ public class PlayerManager implements ParseCallback {
     private PlayerEngine buildEngine(int type, int decode) {
         return switch (type) {
             case PlayerSetting.IJK -> new IjkPlayerEngine(decode, listener);
-            case PlayerSetting.MPV -> new MpvPlayerEngine(decode, listener, this::onMpvVideoSizeProbed);
+            case PlayerSetting.MPV -> new MpvPlayerEngine(decode, listener, this::onMpvVideoSizeProbed, this::onMpvVideoTrackFailure);
             default -> new ExoPlayerEngine(decode, listener);
         };
     }

@@ -4077,17 +4077,21 @@ public class VideoActivity extends PlaybackActivity implements Clock.Callback, C
     }
 
     private void loadArtwork(String url, String owner) {
+        // 占位图用 artwork_cover（512×512）而不是 artwork（1920×1080）：
+        // audioCover 是 174~188dp 的圆，centerCrop 只取中心方块，全尺寸解码等于白占 7.91 MB ——
+        // 这正是真机 OutOfMemoryError 的最后一根稻草。artwork_cover 就是 artwork 的 512×512
+        // 中心裁切，两者画面完全一致；artwork 仍留给全屏兜底（Glide error）用途。
         String requestUrl = Objects.toString(url, "");
         String requestOwner = Objects.toString(owner, "");
         mArtworkRequestUrl = requestUrl;
         mArtworkRequestOwner = requestOwner;
         if (TextUtils.isEmpty(requestUrl)) {
             mBinding.exo.setDefaultArtwork(null);
-            mBinding.audioCover.setImageResource(R.drawable.artwork);
+            mBinding.audioCover.setImageResource(R.drawable.artwork_cover);
             updateAudioArtworkColor(null);
             return;
         }
-        mBinding.audioCover.setImageResource(R.drawable.artwork);
+        mBinding.audioCover.setImageResource(R.drawable.artwork_cover);
         ImgUtil.load(this, requestUrl, new CustomTarget<>() {
             @Override
             public void onResourceReady(@NonNull Drawable resource, @Nullable Transition<? super Drawable> transition) {
@@ -4103,7 +4107,7 @@ public class VideoActivity extends PlaybackActivity implements Clock.Callback, C
                 if (isFinishing() || isDestroyed()) return;
                 if (!isCurrentArtworkRequest(requestUrl, requestOwner)) return;
                 mBinding.exo.setDefaultArtwork(errorDrawable);
-                if (errorDrawable == null) mBinding.audioCover.setImageResource(R.drawable.artwork);
+                if (errorDrawable == null) mBinding.audioCover.setImageResource(R.drawable.artwork_cover);
                 else mBinding.audioCover.setImageDrawable(errorDrawable);
                 updateAudioArtworkColor(errorDrawable);
             }

@@ -69,12 +69,34 @@ public final class MpvPerformanceSetting {
         };
     }
 
+    /**
+     * ⭐⭐⭐⭐⭐ 2026-09-19：这里**必须**把「硬解路径」也算进来，否则设置项在电视上等于不存在。
+     *
+     * <p>原来的实现只读 {@code OUTPUT_MODE}，于是出现下面这条自相矛盾的组合：
+     * 用户按设置页说明把「硬解路径」选成 <b>兼容复制</b>（{@code HWDEC_COPY}，即
+     * {@code hwdec=mediacodec-copy}）想绕开零拷贝黑屏，但输出模式仍是「自动」⇒ 这里照旧返回
+     * {@code true} ⇒ {@code MpvPlayerEngine} 又走 {@code vo=mediacodec_embed} 并把 {@code hwdec}
+     * 写死成 {@code "mediacodec"} ⇒ 用户的选择被完全丢弃。</p>
+     *
+     * <p>而这两个东西在结构上是互斥的：{@code mediacodec_embed} 这个 VO 只吃零拷贝解码器直接
+     * 投递的硬件帧；{@code mediacodec-copy} 把帧拷进内存（软帧）⇒ 直通 VO 无帧可显。
+     * 所以只要用户选了兼容复制，就**不再进直通路径**（即使显式选了「电视直出」——那个组合本身
+     * 就是坏掉的，用户选兼容复制正是因为零拷贝黑屏）。</p>
+     */
     public static boolean shouldUseSurfaceDirect(boolean autoEligible, boolean leanback, boolean hardDecode) {
-        return resolveSurfaceDirect(getOutputMode(), autoEligible, leanback, hardDecode);
+        return resolveSurfaceDirect(getOutputMode(), getHwdecMode(), autoEligible, leanback, hardDecode);
     }
 
+    /**
+     * 保留 4 参数重载以维持既有单测语义（等价于 {@code HWDEC_AUTO}，即不因硬解路径否决）。
+     */
     static boolean resolveSurfaceDirect(int outputMode, boolean autoEligible, boolean leanback, boolean hardDecode) {
+        return resolveSurfaceDirect(outputMode, HWDEC_AUTO, autoEligible, leanback, hardDecode);
+    }
+
+    static boolean resolveSurfaceDirect(int outputMode, int hwdecMode, boolean autoEligible, boolean leanback, boolean hardDecode) {
         if (!hardDecode) return false;
+        if (clamp(hwdecMode, HWDEC_AUTO, HWDEC_COPY) == HWDEC_COPY) return false;
         return switch (clamp(outputMode, OUTPUT_AUTO, OUTPUT_SURFACE_DIRECT)) {
             case OUTPUT_SURFACE_DIRECT -> true;
             case OUTPUT_GPU -> false;
