@@ -44,25 +44,7 @@ public class CustomWallView extends FrameLayout implements DefaultLifecycleObser
 
     private static final int DEFAULT_WALL_COLOR = Setting.getBuiltInWallColor(Setting.WALL_DREAM_PURPLE);
     private static final int GREEN_WALL_COLOR = 0xFF40C090;
-    /**
-     * 静态壁纸的解码下限（像素）。**内置设计墙与用户自定义墙共用这一套策略**：
-     * 目标边长 = {@code max(本值, 屏幕长边 / 2)}，并且统一 ARGB_8888。
-     *
-     * <ul>
-     *   <li>壁纸只是被大面积 UI 遮住的背景。内置渐变墙全尺寸 ARGB_8888 要 7.91 MB，
-     *       降到半分辨率（1/4 像素）实测平均误差 0.05~0.17/255，肉眼无差；
-     *       4K 屏上不降（长边/2 已经 ≥ 1920）。</li>
-     *   <li>⛔ <b>不要用 RGB_565 省内存。</b> 在 1920×1080 真实插画上实测：
-     *       565 的最大差只有 5/255，但平滑天空与雾带出现<b>明显块状色带</b> ——
-     *       伤害是空间上的<b>阶梯</b>，不是每像素误差能反映的；
-     *       而半分辨率 ARGB_8888 的<b>平均</b>误差反而更低（1.25 vs 2.26）且无可见瑕疵。
-     *       证据：{@code apk-check/asset-preview/zoom_sky_565_vs_half.png}、
-     *       {@code zoom_forest_565_vs_half.png}。</li>
-     *   <li>⛔ 别按「绝对上限」写死：手机壁纸是 1080×2400（竖屏），写死 960 会算出
-     *       sampleSize=4 ⇒ 270×600，属于过度降采样。</li>
-     * </ul>
-     */
-    private static final int MIN_WALL_SIDE = 960;
+    private static final int MAX_WALL_BITMAP_SIDE = 1920;
     private static final int TYPE_RES = 0;
     private static final int TYPE_GIF = 1;
     private static final int TYPE_VIDEO = 2;
@@ -126,20 +108,6 @@ public class CustomWallView extends FrameLayout implements DefaultLifecycleObser
         return binding != null && binding.image != null && isAttachedToWindow();
     }
 
-    /**
-     * 只查绑定是否就绪，**不含 {@code isAttachedToWindow()}**。
-     *
-     * <p>⚠️ 为什么需要它：{@link #loadPlaceholder()} 会在 {@code onAttachedToWindow()} 内部
-     * 调用 {@link #loadRes(int)} / {@link #loadDesign(int)} / {@link #loadColor(int)}；
-     * 而 {@code onAttachedToWindow()} 对<b>静态</b>内置墙只调 {@code theme()}、
-     * <b>不</b> post {@code refresh()}。也就是说这几个 setter 一旦因为
-     * {@code isAttachedToWindow()} 为假而提前返回，壁纸会<b>永久不显示</b>，没有第二次机会。
-     * 给已解绑的 view 设 drawable 本身无害，所以这几个 setter 只查绑定。
-     */
-    private boolean bound() {
-        return binding != null && binding.image != null;
-    }
-
     private void stop() {
         if (player != null && player.isPlaying()) {
             player.stop();
@@ -175,56 +143,20 @@ public class CustomWallView extends FrameLayout implements DefaultLifecycleObser
         if (Setting.getThemeColor() == 0) RefreshEvent.theme();
     }
 
-    /**
-     * 采样解码并设置内置壁纸资源。
-     * ⚠️ 守卫用 {@link #bound()} 而不是 {@link #isReady()} —— 理由见 {@code bound()}。
-     */
     private void loadRes(int resId) {
-        if (!bound()) return;
-        Bitmap bitmap = decodeBuiltinWall(resId);
-        if (bitmap != null) binding.image.setImageDrawable(new BitmapDrawable(getResources(), bitmap));
-        else binding.image.setImageResource(resId);
-    }
-
-    /**
-     * 采样解码内置壁纸资源。失败（OOM / 解码不出来）返回 null，调用方退回 {@code setImageResource}。
-     */
-    private Bitmap decodeBuiltinWall(int resId) {
-        try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeResource(getResources(), resId, bounds);
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = wallSampleSize(bounds.outWidth, bounds.outHeight);
-            return BitmapFactory.decodeResource(getResources(), resId, options);
-        } catch (OutOfMemoryError | RuntimeException e) {
-            SpiderDebug.log("startup", "builtin wall decode fallback res=%s error=%s", resId, e.getClass().getSimpleName());
-            return null;
-        }
-    }
-
-    /**
-     * 静态壁纸的统一采样倍率：目标边长 = max({@link #MIN_WALL_SIDE}, 屏幕长边 / 2)。
-     * 内置设计墙与用户自定义墙共用同一套，保证两条路径的解码开销一致。
-     */
-    private int wallSampleSize(int srcWidth, int srcHeight) {
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
-        int target = Math.max(MIN_WALL_SIDE, Math.max(metrics.widthPixels, metrics.heightPixels) / 2);
-        int sampleSize = 1;
-        while (srcWidth / sampleSize > target || srcHeight / sampleSize > target) sampleSize *= 2;
-        return sampleSize;
+        if (!isReady()) return;
+        binding.image.setImageResource(resId);
     }
 
     private void loadColor(int color) {
-        if (!bound()) return;
+        if (!isReady()) return;
         binding.image.setImageDrawable(new ColorDrawable(color));
     }
 
     private void loadDesign(int wall) {
-        if (!bound()) return;
+        if (!isReady()) return;
         int resId = getDesignResId(wall);
-        if (resId != 0) loadRes(resId);
+        if (resId != 0) binding.image.setImageResource(resId);
         else loadColor(Setting.getBuiltInWallColor(wall));
     }
 
@@ -235,13 +167,6 @@ public class CustomWallView extends FrameLayout implements DefaultLifecycleObser
         else loadPlaceholder();
     }
 
-    /**
-     * 首帧占位壁纸（{@code onAttachedToWindow} 里 inflate 之后立刻调用，是冷启动最先画出来的东西）。
-     *
-     * <p>⛔ 绿色墙这里曾经用 {@code setImageResource(R.drawable.wallpaper_1)} —— 全尺寸 ARGB_8888 解码，
-     * 和 {@link #load()} 里同一张图的 {@link #loadRes(int)} 路径**不一致**（那条走采样解码 + OOM 兜底）。
-     * 统一走 {@code loadRes}，两条路径行为一致。
-     */
     private void loadPlaceholder() {
         if (binding == null || binding.image == null) return;
         int wall = Setting.getWall();
@@ -249,7 +174,7 @@ public class CustomWallView extends FrameLayout implements DefaultLifecycleObser
         Drawable cache = cache();
         if (isBuiltInColor(wall, type)) binding.image.setImageDrawable(new ColorDrawable(Setting.getBuiltInWallColor(wall)));
         else if (isBuiltInDesign(wall, type)) loadDesign(wall);
-        else if (isGreen(wall, type)) loadRes(R.drawable.wallpaper_1);
+        else if (isGreen(wall, type)) binding.image.setImageResource(R.drawable.wallpaper_1);
         else if (cache != null) binding.image.setImageDrawable(cache);
         else binding.image.setImageDrawable(new ColorDrawable(DEFAULT_WALL_COLOR));
     }
@@ -311,20 +236,6 @@ public class CustomWallView extends FrameLayout implements DefaultLifecycleObser
         return bitmap == null ? null : new BitmapDrawable(getResources(), bitmap);
     }
 
-    /**
-     * 解码用户自定义壁纸（{@code FileUtil.getWallCache()}）。
-     *
-     * <p>⚠️ 这个缓存文件由 {@code WallConfig.setSnapshot()} 写出，**本身就是屏幕尺寸的 JPEG**
-     * （{@code override(screenWidth, screenHeight)}）⇒ 若不走采样，sampleSize 恒为 1。
-     *
-     * <p>⛔ 这里曾经用 {@code RGB_565 + inDither}。两个问题：
-     * <ol>
-     *   <li>{@code inDither} 在 Android 上**是被忽略的**（API 24 起正式废弃），
-     *       所以实际就是裸 565 ⇒ 用户自己的壁纸（照片 / 插画）会出现色带。</li>
-     *   <li>1080p 全屏 565 要 4.15 MB；改成与内置墙同一套采样 + ARGB_8888 后只要 1.98 MB
-     *       —— <b>更省内存，而且没有色带</b>。</li>
-     * </ol>
-     */
     private Bitmap decodeWallBitmap(File file) {
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
@@ -332,12 +243,23 @@ public class CustomWallView extends FrameLayout implements DefaultLifecycleObser
             BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
             BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = wallSampleSize(bounds.outWidth, bounds.outHeight);
+            options.inSampleSize = getWallSampleSize(bounds);
+            options.inPreferredConfig = Bitmap.Config.RGB_565;
+            options.inDither = true;
             return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
         } catch (OutOfMemoryError | RuntimeException e) {
             SpiderDebug.log("startup", "wall bitmap decode fallback file=%s error=%s", file.getName(), e.getClass().getSimpleName());
             return null;
         }
+    }
+
+    private int getWallSampleSize(BitmapFactory.Options bounds) {
+        DisplayMetrics metrics = getResources().getDisplayMetrics();
+        int reqWidth = Math.max(1, Math.min(metrics.widthPixels, MAX_WALL_BITMAP_SIDE));
+        int reqHeight = Math.max(1, Math.min(metrics.heightPixels, MAX_WALL_BITMAP_SIDE));
+        int sampleSize = 1;
+        while (bounds.outWidth / sampleSize > reqWidth || bounds.outHeight / sampleSize > reqHeight) sampleSize *= 2;
+        return sampleSize;
     }
 
     private GifDrawable gif(File file) {

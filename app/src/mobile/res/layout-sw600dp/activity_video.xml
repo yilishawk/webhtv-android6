@@ -67,7 +67,7 @@
                     android:layout_width="188dp"
                     android:layout_height="188dp"
                     android:scaleType="centerCrop"
-                    android:src="@drawable/artwork_cover"
+                    android:src="@drawable/artwork"
                     app:shapeAppearanceOverlay="@style/ShapeAppearance.WebHTV.AudioCover"
                     app:strokeColor="@color/white_20"
                     app:strokeWidth="1dp" />
