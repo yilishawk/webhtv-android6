@@ -26,6 +26,51 @@ def apkSuffix = (System.getenv('WEBHTV_APK_SUFFIX') ?: '').replaceAll('[^A-Za-z0
 def rawAppIdSuffix = (System.getenv('WEBHTV_APP_ID_SUFFIX') ?: '').trim().replaceAll('[^A-Za-z0-9._-]', '')
 def appIdSuffix = rawAppIdSuffix.isEmpty() || rawAppIdSuffix.startsWith('.') ? rawAppIdSuffix : '.' + rawAppIdSuffix
 
+// Gift build: an APK handed out to other people. It ships with the in-app updater disabled (the
+// check would point at our own releases) and with a remote kill switch armed. Every field below
+// defaults to the CURRENT behaviour, so a build that does not set WEBHTV_GIFT_MODE is
+// byte-for-byte identical to what this project produced before.
+def giftMode = (System.getenv('WEBHTV_GIFT_MODE') ?: '').trim() == '1'
+// Never leave the gift build pointed at a live repository. ENABLE_UPDATE is false there anyway,
+// but a placeholder makes any call site we failed to gate fail closed instead of reaching our
+// releases. A normal build keeps the real repository, unchanged.
+def updateRepo = (System.getenv('WEBHTV_UPDATE_REPO') ?: (giftMode ? 'gift-build/has-no-update' : 'yilishawk/webhtv-android6')).trim()
+// Where a gift build reads its kill-switch state from (see utils/RemoteGate.java). Any source
+// saying "enabled": false wins; only if ALL of them fail does the strict policy lock the app.
+// A normal build gets an empty string, so no gate URL literal ever reaches its dex.
+//
+// ⛔ 这里**故意不写任何默认地址**。开关文件托管在**另一个账号**下（不是本仓库），源码里一旦
+//    写死一个地址，换托管位置时就会漏改；而"漏改"的后果不是少个功能，是**所有赠送版一起锁死**
+//    —— 严格锁的规则是"全部拿不到 ⇒ 也锁"，地址错了就等于把每个用户都锁在
+//    「此应用已被提供者停用」上，而且你改开关文件也救不回来（它们根本读不到）。所以赠送版
+//    构建**必须**显式提供 WEBHTV_GATE_URLS，否则下面直接抛异常、不出包。构建红一次，
+//    好过静默发出去一个会把所有收件人锁死的包。
+// 格式：多个 URL 用 | 分隔。例：
+//     https://raw.githubusercontent.com/<另一个账号>/<仓库>/main/status.json
+def gateUrls = (System.getenv('WEBHTV_GATE_URLS') ?: '').trim()
+def gateUrlsJava = gateUrls.replace('\\', '\\\\').replace('"', '\\"')
+// 设置 → 增强功能 里的「打开项目主页」按钮指向的地址（两个 flavor 各一处）。赠送版**不能**
+// 指向我们的仓库 —— 那个按钮是用户能直接点到的入口，点进去就看见正式版的下载页。
+// 所以赠送版给它空串，两个调用点发现为空就把入口整个隐藏（见 SettingEnhanceActivity /
+// SettingEnhanceFragment）。普通包保持原样；BuildConfig 字段是编译期常量，字面量照样会被
+// 折进那两处调用点，与改动前逐字节等价。
+def projectUrl = (System.getenv('WEBHTV_PROJECT_URL') ?: (giftMode ? '' : 'https://github.com/yilishawk/webhtv-android6')).trim()
+def projectUrlJava = projectUrl.replace('\\', '\\\\').replace('"', '\\"')
+
+// ⭐ 赠送版没有开关地址 ⇒ 构建**失败**，不出包。理由见上面 gateUrls 那段注释：一个没有开关
+// 地址的赠送版会把所有收件人锁死在「此应用已被提供者停用」上，而且不可挽回。
+if (giftMode && gateUrls.isEmpty()) {
+    throw new GradleException(
+            '赠送版必须提供远程开关地址（WEBHTV_GATE_URLS），否则不出包。\n' +
+            '  为什么不让它默认空着：严格锁的规则是「全部拿不到 => 也锁」，所以一个没有\n' +
+            '  开关地址的赠送版一启动就把用户锁死在「此应用已被提供者停用」上，而你之后\n' +
+            '  改开关文件也救不回来 —— 它根本读不到。\n' +
+            '  格式：多个 URL 用 | 分隔。例：\n' +
+            '      https://raw.githubusercontent.com/<另一个账号>/<仓库>/main/status.json\n' +
+            '  跑 Android Gift Build 时填 gate_urls 输入；本地构建用 WEBHTV_GATE_URLS 环境变量。\n' +
+            '  普通包（不设 WEBHTV_GIFT_MODE）不受影响。')
+}
+
 android {
     namespace = 'com.fongmi.android.tv'
 
@@ -45,6 +90,15 @@ android {
         // in-app updater has to look for that same name. Without this the updater would request
         // e.g. "leanback-armeabi_v7a.json" while CI publishes "leanback-armeabi_v7a-a6.json".
         buildConfigField "String", "APK_SUFFIX", "\"${apkSuffix}\""
+        // Gift builds (WEBHTV_GIFT_MODE=1) ship without the in-app updater and with the remote
+        // kill switch armed. Both default to the normal build's behaviour: update on, gate off.
+        buildConfigField "boolean", "ENABLE_UPDATE", "${!giftMode}"
+        buildConfigField "boolean", "ENABLE_REMOTE_GATE", "${giftMode}"
+        buildConfigField "String", "UPDATE_REPO", "\"${updateRepo}\""
+        buildConfigField "String", "REMOTE_GATE_URLS", "\"${gateUrlsJava}\""
+        // Empty in a gift build -> the "open project page" button is hidden instead of pointing
+        // at our repository. See the comment where projectUrl is computed.
+        buildConfigField "String", "PROJECT_URL", "\"${projectUrlJava}\""
         javaCompileOptions {
             annotationProcessorOptions {
                 arguments = ["room.schemaLocation": "$projectDir/schemas".toString(), "eventBusIndex": "com.fongmi.android.tv.event.EventIndex"]

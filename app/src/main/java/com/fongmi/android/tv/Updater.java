@@ -133,6 +133,10 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
             restoreDialog(activity);
             return;
         }
+        // Gift builds ship without an updater: the check would reach our own releases, and the
+        // APK is handed out to people who should not be offered our builds at all. This is the
+        // only gate in the whole tree -- every caller funnels through start().
+        if (!BuildConfig.ENABLE_UPDATE) return;
         if (!Setting.getUpdate()) return;
         Task.execute(() -> doInBackground(activity, forceCheck));
     }

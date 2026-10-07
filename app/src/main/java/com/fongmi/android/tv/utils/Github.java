@@ -1,5 +1,7 @@
 package com.fongmi.android.tv.utils;
 
+import com.fongmi.android.tv.BuildConfig;
+
 public class Github {
 
     // This is a fork that ships its own builds. The in-app update check MUST look at our own
@@ -7,7 +9,17 @@ public class Github {
     // that carries none of the Android 6 patches, and Update.hasUpdate() compares with "!="
     // rather than ">", so any upstream bump would be advertised as an update to our users.
     // Keep every repository reference derived from this one constant.
-    private static final String REPO = "yilishawk/webhtv-android6";
+    //
+    // The value now comes from BuildConfig.UPDATE_REPO so a gift build (WEBHTV_GIFT_MODE=1) can be
+    // built from this same tree without pointing at our releases. BuildConfig fields are
+    // `public static final String`, so javac still constant-folds this into the same six derived
+    // URL literals that the hard-coded constant produced -- a normal build is unchanged. The
+    // gift-build assertions (.github/scripts/verify-gift-build.py) check the REAL dex for the bare
+    // repository path ("owner/repo", no scheme, no host), which appears inside every literal below
+    // -- all six derived URLs plus the "open project page" button (gated by BuildConfig.PROJECT_URL)
+    // -- so a single needle covers every shape at once, including CDN forms such as
+    // "cdn.jsdelivr.net/gh/<owner>/<repo>@main/..." that never contain "github.com/".
+    private static final String REPO = BuildConfig.UPDATE_REPO;
     private static final String GITHUB_LATEST = "https://github.com/" + REPO + "/releases/latest/download";
     private static final String GITHUB_RELEASE = "https://github.com/" + REPO + "/releases/download";
     private static final String GITHUB_API = "https://api.github.com/repos/" + REPO + "/releases/tags";

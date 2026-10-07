@@ -3,6 +3,7 @@ package com.fongmi.android.tv.ui.fragment;
 import android.content.Intent;
 import android.net.Uri;
 import android.view.LayoutInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
@@ -11,6 +12,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.viewbinding.ViewBinding;
 
+import com.fongmi.android.tv.BuildConfig;
 import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.gitcloud.GitCloudAccountStore;
 import com.fongmi.android.tv.playback.ViewingRecordSyncStore;
@@ -45,7 +47,13 @@ public class SettingEnhanceFragment extends BaseFragment {
 
     // Points at this fork's own repository. URL_CNB is the *extension* source and stays on
     // upstream, because that is where the WebHome extension packages are actually published.
-    private static final String URL_GITHUB = "https://github.com/yilishawk/webhtv-android6";
+    //
+    // A gift build (WEBHTV_GIFT_MODE=1) gets an EMPTY BuildConfig.PROJECT_URL and hides the menu
+    // item instead (see initMenu). This one matters more than the updater gate: the item is a door
+    // the *user* can tap, and it leads straight to our release page. A gift build must not carry
+    // the address at all. A normal build is unaffected -- the constant is folded into this call
+    // site exactly as the literal used to be.
+    private static final String URL_GITHUB = BuildConfig.PROJECT_URL;
     private static final String URL_CNB = "https://cnb.cool/fish2035/ext";
 
     private FragmentSettingEnhanceBinding mBinding;
@@ -61,6 +69,15 @@ public class SettingEnhanceFragment extends BaseFragment {
     @Override
     protected ViewBinding getBinding(@NonNull LayoutInflater inflater, @Nullable ViewGroup container) {
         return mBinding = FragmentSettingEnhanceBinding.inflate(inflater, container, false);
+    }
+
+    @Override
+    protected void initMenu() {
+        // Hide the repo item when there is no address to open (gift build). Hiding instead of
+        // leaving a dead item: a tap that does nothing reads as a bug. The address itself is a
+        // compile-time constant, so an empty one also keeps the literal out of the dex entirely.
+        MenuItem item = mBinding.toolbar.getMenu().findItem(R.id.githubRepo);
+        if (item != null) item.setVisible(!URL_GITHUB.isEmpty());
     }
 
     @Override

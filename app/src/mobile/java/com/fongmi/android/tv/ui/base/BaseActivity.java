@@ -21,6 +21,7 @@ import com.fongmi.android.tv.Updater;
 import com.fongmi.android.tv.event.RefreshEvent;
 import com.fongmi.android.tv.setting.Setting;
 import com.fongmi.android.tv.ui.custom.CustomWallView;
+import com.fongmi.android.tv.utils.RemoteGate;
 import com.fongmi.android.tv.utils.ResUtil;
 import com.google.android.material.color.DynamicColors;
 import com.google.android.material.color.DynamicColorsOptions;
@@ -142,6 +143,8 @@ public abstract class BaseActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         Updater.create().resume(this);
+        // Gift builds only: no-op in a normal build (ENABLE_REMOTE_GATE is a compile-time false).
+        RemoteGate.guard(this);
     }
 
     @Override

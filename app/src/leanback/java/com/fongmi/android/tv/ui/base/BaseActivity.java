@@ -21,6 +21,7 @@ import com.fongmi.android.tv.event.RefreshEvent;
 import com.fongmi.android.tv.server.process.ApkUrlPush;
 import com.fongmi.android.tv.setting.Setting;
 import com.fongmi.android.tv.ui.custom.CustomWallView;
+import com.fongmi.android.tv.utils.RemoteGate;
 import com.fongmi.android.tv.utils.Util;
 
 import org.greenrobot.eventbus.EventBus;
@@ -160,6 +161,8 @@ public abstract class BaseActivity extends AppCompatActivity {
         super.onResume();
         Updater.create().resume(this);
         ApkUrlPush.get().resume(this);
+        // Gift builds only: no-op in a normal build (ENABLE_REMOTE_GATE is a compile-time false).
+        RemoteGate.guard(this);
     }
 
     @Override

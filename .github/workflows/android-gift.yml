@@ -1,0 +1,219 @@
+name: Android Gift Build
+
+# 单独一条流水线，产出「送给别人用」的那个包。
+#
+# 为什么不复用 android-release.yml：赠送版和正式版是两件事。正式版发布要动 /releases/latest、
+# 要发更新清单、要同步 CNB/OCI；赠送版一条都不能碰。分开之后，赠送版构建失败也不会让
+# 发布流程看起来有问题。
+#
+# 与正式版的差异（全部由 WEBHTV_GIFT_MODE=1 驱动）：
+#   * BuildConfig.ENABLE_UPDATE=false     —— 包内没有应用内更新（更新会指向我们自己的仓库）
+#   * BuildConfig.ENABLE_REMOTE_GATE=true —— 打开远程开关，可远端停用。开关文件托管在**另一个
+#     账号**下（不是本仓库；模板见仓库里的 gift/status.example.json），所以构建时**必须**通过
+#     gate_urls 提供地址，否则 app/build.gradle 直接抛 GradleException、不出包 —— 一个没有开关
+#     地址的赠送版会在启动时触发严格锁，把所有收件人锁死在「此应用已被提供者停用」上。
+#   * BuildConfig.PROJECT_URL=""          —— 设置页「打开项目主页」按钮置空并隐藏
+#     ⇒ 赠送版里不该出现我们仓库的**任何**路径，由出厂断言第 1 条把关。
+#   * applicationId 加后缀（默认 gift）    —— 能和凯哥自己的包装在同一台设备上
+#   * 资产名后缀 -gift                     —— 与正式版的 -a6 不重名
+#   * ⭐ **不创建 GitHub Release**，只上传 workflow artifact
+#     ⇒ 仓库的 Releases 列表、/releases/latest、以及正式版 beta 通道扫描的 /releases
+#       全部零影响。这是「不影响我现在的仓库」最硬的保证：不往 Releases 里放东西，
+#       就不可能改到 /releases/latest。
+#       ⚠️ 代价：artifact 需要登录 GitHub 才能下载，且有保留期（见文件末尾 retention-days）。
+#       要长期可分享的链接，就在本文件末尾加一步 `gh release create --prerelease --latest=false`
+#       —— 用 prerelease 是因为 /releases/latest 一定排除 prerelease，这是硬保证；
+#       加 --latest=false 是第二层保险。
+#   * 不发更新清单（*.json），不发 R8 mapping
+#
+# 出厂断言：.github/scripts/verify-gift-build.py 会解包检查产物，确认上面这些真的生效了。
+# 只看产物、不看意图 —— 环境变量漏传不会有任何编译错误，只会静默发出去一个带更新器的赠送版。
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_tag:
+        description: "烧进包里的构建标识，留空 = v<versionName>-gift-yyyyMMddHHmm"
+        required: false
+        type: string
+      app_id_suffix:
+        description: "applicationId 后缀（默认 gift ⇒ com.fongmi.android.tv.gift）。**不能留空**：留空会让赠送版和正式版同 id 同签名，装上去直接覆盖正式版。"
+        required: false
+        default: gift
+        type: string
+      gate_urls:
+        description: "开关状态文件的 URL，多个用 | 分隔。默认已填好（另一个账号 wkyilisha/m，走 jsDelivr）。⚠️ 改托管位置时改这里，别指向本仓库 —— 出厂断言会直接失败。留空会让构建失败（app/build.gradle 直接抛异常）：一个没有开关地址的赠送版会把所有收件人锁死在「已停用」上且不可挽回。"
+        required: false
+        default: "https://cdn.jsdelivr.net/gh/wkyilisha/m@main/status.json"
+        type: string
+
+# 不建 Release、不推 tag，所以只需要读权限。
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  gift:
+    name: Build gift APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      # ⭐ 早失败。app/build.gradle 也会拦（抛 GradleException），但那要等到 Gradle 配置阶段 ——
+      # 先在这里拦一道，省掉几分钟的 SDK 安装。只用到 input，所以放在 checkout 之前。
+      - name: Require gate_urls
+        env:
+          GATE_URLS: ${{ inputs.gate_urls }}
+        run: |
+          if [ -z "$GATE_URLS" ]; then
+            echo "::error title=赠送版必须提供 gate_urls::开关文件放在**另一个账号**下（模板见仓库里的 gift/status.example.json）。留空会让 app/build.gradle 直接抛异常 —— 一个没有开关地址的赠送版会把所有收件人锁死在「已停用」上。默认值见本文件 inputs.gate_urls.default"
+            exit 1
+          fi
+          case "$GATE_URLS" in
+            *yilishawk/webhtv-android6*)
+              echo "::error title=gate_urls 指向了本仓库::赠送版里不许出现这个路径（出厂断言第 1 条会直接失败）。开关文件应该放在另一个账号下 —— 同一个账号换个仓库名没用，URL 里仍然带着账号名。"
+              exit 1 ;;
+          esac
+          echo "gate_urls = $GATE_URLS"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      # 不装 setup-python：ubuntu-latest 自带 python3，出厂断言脚本只用标准库。
+
+      - name: Verify bundled MPV native assets
+        run: bash scripts/verify_mpv_native_assets.sh --require-elf
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # 必须显式覆盖：这个 action 的默认值是 "tools platform-tools"，而 Google 已经把
+          # 独立的 tools 包从 SDK 仓库里下掉了 —— 实测 repository2-3.xml 的 255 个包里没有
+          # "tools"，sdkmanager 会报 "Warning: Failed to find package 'tools'" 然后 exit 1。
+          packages: platform-tools
+
+      - name: Install Android packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;29.0.14206865" "cmake;3.22.1"
+
+      # 与正式版保持一致的质量门禁。赠送版尤其需要：用户离得远，而且这个包没有更新器，
+      # 出了问题没法自我修复，只能重新发一个。
+      - name: Run WebSocket danmaku tests
+        run: |
+          chmod +x ./gradlew
+          ./gradlew \
+            :app:testMobileArm64_v8aDebugUnitTest \
+            --tests 'com.fongmi.android.tv.player.danmaku.*' \
+            --no-daemon
+
+      - name: Resolve gift build tag
+        id: meta
+        run: |
+          VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle | head -1)"
+          VERSION_CODE="$(sed -n 's/^[[:space:]]*versionCode[[:space:]]*\([0-9][0-9]*\).*/\1/p' app/build.gradle | head -1)"
+          # 与 app/build.gradle 的净化规则保持一致：只留 [A-Za-z0-9._-]。
+          APP_ID_SUFFIX="$(printf '%s' '${{ inputs.app_id_suffix }}' | tr -cd 'A-Za-z0-9._-')"
+          if [ -z "$APP_ID_SUFFIX" ]; then
+            echo "::error title=赠送版必须带 applicationId 后缀::留空会让赠送版和正式版同 id 同签名，装上去会直接覆盖正式版。请填一个后缀（默认 gift）。"
+            exit 1
+          fi
+          APP_ID="com.fongmi.android.tv.${APP_ID_SUFFIX#.}"
+          APK_SUFFIX="-${APP_ID_SUFFIX#.}"
+          BUILD_TAG="${{ inputs.build_tag }}"
+          if [ -z "$BUILD_TAG" ]; then
+            BUILD_TAG="v${VERSION_NAME}-gift-$(date +%Y%m%d%H%M)"
+          fi
+          {
+            echo "build_tag=$BUILD_TAG"
+            echo "version_name=$VERSION_NAME"
+            echo "version_code=$VERSION_CODE"
+            echo "short_sha=$(git rev-parse --short=7 HEAD)"
+            echo "apk_suffix=$APK_SUFFIX"
+            echo "app_id=$APP_ID"
+          } >> "$GITHUB_OUTPUT"
+          echo "gift build: tag=$BUILD_TAG appId=$APP_ID apkSuffix=$APK_SUFFIX"
+
+      - name: Configure release signing
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          KS_BASE64="${RELEASE_KEYSTORE_BASE64:-$KEYSTORE_BASE64}"
+          STORE_PASSWORD="${RELEASE_STORE_PASSWORD:-$KEY_PASSWORD}"
+          ALIAS="${RELEASE_KEY_ALIAS:-$KEY_ALIAS}"
+          KEY_PASS="${RELEASE_KEY_PASSWORD:-$STORE_PASSWORD}"
+          if [ -z "$KS_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$ALIAS" ]; then
+            echo "::error title=Release signing not configured::Configure RELEASE_KEYSTORE_BASE64, RELEASE_KEY_ALIAS and RELEASE_STORE_PASSWORD in repository secrets."
+            exit 1
+          fi
+          mkdir -p app/signing
+          printf '%s' "$KS_BASE64" | base64 --decode > app/signing/release.jks
+          {
+            echo "storeFile=$GITHUB_WORKSPACE/app/signing/release.jks"
+            echo "keyAlias=$ALIAS"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyPassword=$KEY_PASS"
+          } > local.properties
+          echo "Release signing configured"
+
+      - name: Build four gift APKs
+        env:
+          # ⭐ 这一行是「赠送版」三个字的全部含义所在。
+          WEBHTV_GIFT_MODE: "1"
+          WEBHTV_RELEASE_TAG: ${{ steps.meta.outputs.build_tag }}
+          WEBHTV_APK_SUFFIX: ${{ steps.meta.outputs.apk_suffix }}
+          WEBHTV_APP_ID_SUFFIX: ${{ inputs.app_id_suffix }}
+          # 开关地址。app/build.gradle 对赠送版**强制要求它非空**（否则抛异常），因为一个没有
+          # 开关地址的赠送版会被严格锁把所有收件人锁死。上面已有一道早失败，这里是真正的执行点。
+          WEBHTV_GATE_URLS: ${{ inputs.gate_urls }}
+        run: |
+          chmod +x ./gradlew
+          rm -rf Release/apk
+          ./gradlew \
+            :app:assembleMobileArm64_v8aRelease \
+            :app:assembleMobileArmeabi_v7aRelease \
+            :app:assembleLeanbackArm64_v8aRelease \
+            :app:assembleLeanbackArmeabi_v7aRelease \
+            --no-daemon
+
+      - name: Collect artifacts
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          cp Release/apk/*.apk dist/
+          ls -lh dist/
+
+      # ⭐ 只看产物，不看意图。环境变量漏传不会有编译错误 —— 出来的会是一个「资产名叫 -gift、
+      # 但更新器仍然指向我们仓库」的包，静默发出去。这一步就是拦它的。
+      - name: Verify gift build assertions
+        env:
+          GATE_URLS: ${{ inputs.gate_urls }}
+        run: |
+          # 开关地址的判据（host）由脚本自己从 --gate-urls 推导，免得在 bash 里再写一套
+          # 易错的 URL 解析。
+          python3 .github/scripts/verify-gift-build.py \
+            --app-id '${{ steps.meta.outputs.app_id }}' \
+            --gate-urls "$GATE_URLS" \
+            dist/*.apk
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: webhtv-gift-${{ steps.meta.outputs.build_tag }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

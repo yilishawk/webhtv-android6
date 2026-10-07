@@ -10,6 +10,7 @@ import android.widget.TextView;
 
 import androidx.viewbinding.ViewBinding;
 
+import com.fongmi.android.tv.BuildConfig;
 import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.gitcloud.GitCloudAccountStore;
 import com.fongmi.android.tv.playback.ViewingRecordSyncStore;
@@ -42,7 +43,13 @@ public class SettingEnhanceActivity extends BaseActivity {
 
     // Points at this fork's own repository. URL_CNB is the *extension* source and stays on
     // upstream, because that is where the WebHome extension packages are actually published.
-    private static final String URL_GITHUB = "https://github.com/yilishawk/webhtv-android6";
+    //
+    // A gift build (WEBHTV_GIFT_MODE=1) gets an EMPTY BuildConfig.PROJECT_URL and hides the
+    // button instead (see initView). This one matters more than the updater gate: the button is
+    // a door the *user* can tap, and it leads straight to our release page. A gift build must not
+    // carry the address at all. A normal build is unaffected -- the constant is folded into this
+    // call site exactly as the literal used to be.
+    private static final String URL_GITHUB = BuildConfig.PROJECT_URL;
     private static final String URL_CNB = "https://cnb.cool/fish2035/ext";
 
     private ActivitySettingEnhanceBinding mBinding;
@@ -62,6 +69,10 @@ public class SettingEnhanceActivity extends BaseActivity {
 
     @Override
     protected void initView(Bundle savedInstanceState) {
+        // Hide the repo button when there is no address to open (gift build). Hiding instead of
+        // leaving a dead button: a tap that does nothing reads as a bug. The address itself is a
+        // compile-time constant, so an empty one also keeps the literal out of the dex entirely.
+        mBinding.githubRepo.setVisibility(URL_GITHUB.isEmpty() ? View.GONE : View.VISIBLE);
         reorderItems();
         mBinding.customCsp.requestFocus();
         setText();
