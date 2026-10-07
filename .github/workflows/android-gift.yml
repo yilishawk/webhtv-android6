@@ -16,15 +16,18 @@ name: Android Gift Build
 #     ⇒ 赠送版里不该出现我们仓库的**任何**路径，由出厂断言第 1 条把关。
 #   * applicationId 加后缀（默认 gift）    —— 能和凯哥自己的包装在同一台设备上
 #   * 资产名后缀 -gift                     —— 与正式版的 -a6 不重名
-#   * ⭐ **不创建 GitHub Release**，只上传 workflow artifact
-#     ⇒ 仓库的 Releases 列表、/releases/latest、以及正式版 beta 通道扫描的 /releases
-#       全部零影响。这是「不影响我现在的仓库」最硬的保证：不往 Releases 里放东西，
-#       就不可能改到 /releases/latest。
-#       ⚠️ 代价：artifact 需要登录 GitHub 才能下载，且有保留期（见文件末尾 retention-days）。
-#       要长期可分享的链接，就在本文件末尾加一步 `gh release create --prerelease --latest=false`
-#       —— 用 prerelease 是因为 /releases/latest 一定排除 prerelease，这是硬保证；
-#       加 --latest=false 是第二层保险。
-#   * 不发更新清单（*.json），不发 R8 mapping
+#   * ⭐ 发布成 **prerelease**（`--prerelease --latest=false`），而不是普通 release。
+#     这样有一个**长期可分享的下载页**，同时三条硬保证让正式版完全不受影响：
+#       ① `/releases/latest` 由 GitHub **硬排除** prerelease ⇒ 正式版的 stable 通道看不到它。
+#       ② 正式版的 beta 通道（Updater.getGithubBetaUpdate）虽然扫 /releases 找 prerelease，
+#          但**还要求该 release 携带 *-beta.json 清单**才认（Updater.java:242-243）。赠送版
+#          release 里**只有 APK、没有 json**（见 Collect artifacts）⇒ 直接跳过。
+#       ③ 就算真被选中，findAsset() 找的是 `-a6` 后缀的资产名，赠送版是 `-gift` ⇒ 仍然匹配不上。
+#     tag 也不冲突：赠送版是 `v<versionName>-gift-<12位时间>`，正式版是 `v<versionName>-<12位>`
+#     或 `v<versionName>-beta-<12位>`，正式版流水线的 tag 校验只校验它自己要建的那个。
+#     ⚠️ 仍然**不发更新清单（*.json）、不发 R8 mapping** —— 上面第 ② 条就靠这个成立。
+#   * 上传 workflow artifact（保留期见文件末尾 retention-days）—— 与 prerelease 并存，
+#     artifact 用于快速取件，prerelease 用于长期分享。
 #
 # 出厂断言：.github/scripts/verify-gift-build.py 会解包检查产物，确认上面这些真的生效了。
 # 只看产物、不看意图 —— 环境变量漏传不会有任何编译错误，只会静默发出去一个带更新器的赠送版。
@@ -47,9 +50,11 @@ on:
         default: "https://cdn.jsdelivr.net/gh/wkyilisha/m@main/status.json"
         type: string
 
-# 不建 Release、不推 tag，所以只需要读权限。
+# 需要 contents: write 才能创建 prerelease（见末尾 Publish as prerelease 那一步）。
+# 本流水线是 workflow_dispatch-only，且只 checkout 本仓库自己的代码，不接外部输入当代码跑。
+# ⚠️ 正式版流水线（android-release.yml）的权限不受这里影响 —— 权限是 per-workflow 的。
 permissions:
-  contents: read
+  contents: write
 
 env:
   TZ: Asia/Shanghai
@@ -227,3 +232,38 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 30
+
+      # ⭐ 发成 **prerelease** ⇒ 有一个长期可分享的下载页（artifact 只留 30 天、且要登录才能下）。
+      # 为什么这样不会影响正式版，见文件顶部那段的三条硬保证 —— 这里再强调一条：
+      # ⛔ 只发 `dist/*.apk`，**绝不**发 *.json 清单。正式版 beta 通道正是因为「找不到 *-beta.json」
+      #    才会跳过这个 release（Updater.java:242-243）。多发一个 json 就会把赠送版推进正式版的
+      #    beta 更新通道。这是这一步最容易被后人"顺手改坏"的地方。
+      # 只在前面全部成功时才跑（默认 if: success()）—— 出厂断言没过就不该有任何可分享的产物。
+      # 重复运行：build_tag 留空时每次都会按分钟重新生成 ⇒ 不会撞名；若显式传了同一个 build_tag
+      # 且该 release 已存在，这里会**报错退出**（不静默覆盖），这是有意的。
+      - name: Publish as prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.build_tag }}
+          APP_ID: ${{ steps.meta.outputs.app_id }}
+        run: |
+          NOTES=$(printf '%s\n' \
+            "赠送版（gift build）—— 交给别人用的包。" \
+            "" \
+            "- 构建标识：$TAG" \
+            "- 提交：$GITHUB_SHA" \
+            "- applicationId：$APP_ID（与正式版**不同 id**，可以装在同一台设备上）" \
+            "- 资产：4 个 APK（Mobile / Leanback × arm64_v8a / armeabi_v7a）" \
+            "" \
+            "⚠️ 这个包**没有应用内更新** —— 出了问题只能由提供者重新发一个。" \
+            "⚠️ 带远端开关：提供者可随时停用；停用后打开会提示「应用已停用」。" \
+            "⚠️ 不含 R8 mapping，因此无法解混淆这个版本崩溃日志里的混淆名。")
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "赠送版 $TAG" \
+            --prerelease \
+            --latest=false \
+            --notes "$NOTES" \
+            dist/*.apk
+          echo "prerelease 已发布: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
