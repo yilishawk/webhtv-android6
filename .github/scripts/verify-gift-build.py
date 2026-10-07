@@ -8,8 +8,10 @@
 断言（每条对应一个具体的失败模式）：
   1. 我们**本仓库**的路径一条都不许出现 ⇒ 失败模式：WEBHTV_GIFT_MODE 没生效，或者开关地址
      被填回了本仓库。判据是**完整仓库路径** "yilishawk/webhtv-android6"（理由见下）。
-  2. 占位仓库名必须在                    ⇒ 正向对照，证明上面那条不是因为「整个更新器被摇掉」
-                                            或者「dex 是空的」才「干净」
+  2. 凡是 dex 里出现的 "<...>/releases" URL，其仓库路径**必须**是占位仓库
+                                        ⇒ 失败模式：更新器指向了一个既不是我们、也不是占位
+                                           仓库的地方。⚠️ 这条**不能**写成「占位仓库必须出现」
+                                           —— 见下面 2026-10-07 那条实测修正。
   3. 开关地址必须在                      ⇒ 失败模式：WEBHTV_GATE_URLS 没注入。判据是 gate_urls
                                             里的**每一条完整 URL**（由 --gate-urls 传入）。
                                             ⚠️ build.gradle 对赠送版强制要求它非空（否则抛异常
@@ -41,6 +43,23 @@
 
 ⛔ 也不能假设「6 条 URL 都在包里」：GITHUB_LATEST / CNB 这两条在本 fork 里**没有调用者**，
 R8 会把方法连同字面量一起摇掉。实测 2026-09-19 的 leanback-armeabi_v7a-a6.apk 里只有 5 条。
+
+⛔⛔ 第 2 条为什么**不是**「占位仓库必须出现」（2026-10-07 首次赠送版构建实测修正）：
+  赠送版里 ENABLE_UPDATE=false 是**编译期常量**，而 Updater.start() 开头就是
+  `if (!BuildConfig.ENABLE_UPDATE) return;`（全树唯一的闸门，所有调用者都从 start() 进）。
+  R8 把它折成无条件 return ⇒ doInBackground 不可达 ⇒ 而 Github.* 的**唯一**调用者就是
+  doInBackground ⇒ 整个 Github 类连同它的 6 条 URL 字面量（含占位仓库）一起被摇掉。
+  实测证据（run 37600621657，4/4 个包）：占位仓库 x0，而 gate 地址 x1、appId 命中
+  ⇒ gift 模式确实生效了。所以「占位仓库必须出现」在**正确的**赠送版上**必然失败**，
+  它是个只会误报的判据 —— 首次跑这条流水线就红在这里。
+  旁证：本地正式版 leanback-armeabi_v7a-a6.apk 的 dex 合计 17,566,048 字节，
+  赠送版同 flavor 是 17,544,552 字节，**小 21,496 字节**（常量差异解释不了这个量级）。
+
+  新判据（见 check_apk）对**两种情况都正确**，这是它比旧判据强的地方：
+      * 更新器被摇掉（赠送版的真实形态）⇒ 零匹配 ⇒ 通过
+      * 更新器活着但指向别的仓库      ⇒ 匹配到非占位仓库 ⇒ 失败
+  而「gift 模式到底有没有生效」由**第 3 条**（gate 地址必须出现）保证：ENABLE_REMOTE_GATE=false
+  时 RemoteGate 整条也会被摇掉，gate 字面量根本不会出现 ⇒ 它出现即证明是赠送版。
 所以这里只要求「出现过」，不要求条数。
 
 用法:
@@ -59,6 +78,13 @@ REAL_REPO = "yilishawk/webhtv-android6"
 # 赠送版里禁止出现的字面量。用完整仓库路径，一条覆盖上面列的全部形式。
 FORBIDDEN_NEEDLES = [REAL_REPO]
 PLACEHOLDER_REPO = "gift-build/has-no-update"
+
+# 形如 "github.com/<owner>/<repo>/releases..." 或 "api.github.com/repos/<owner>/<repo>/releases..."。
+# 用 (?:repos/)? 一次覆盖两种形态。
+# ⚠️ raw.githubusercontent.com **不会**误匹配 —— 那是 "githubusercontent.com"，不含 "github.com"。
+# ⚠️ 卡拉OK 那处是 "api.github.com/repos/<owner>/<repo>/git/trees/..."，后缀不是 /releases，也不匹配。
+UPDATER_RELEASES_RE = re.compile(
+    rb"github\.com/(?:repos/)?([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)/releases")
 
 DEX_RE = re.compile(r"classes\d*\.dex")
 
@@ -99,14 +125,21 @@ def check_apk(path, app_id, gate_needles):
             problems.append("赠送版里不该出现本仓库的路径：%s（更新器派生 URL /「打开项目主页」"
                             "按钮 / 被填回本仓库的开关地址）" % needle)
 
+    # 第 2 条：凡是 "<...>/releases" 形态的 URL，其仓库路径**必须**是占位仓库。
+    #   * 零匹配 ⇒ 更新器整条被 R8 摇掉 ⇒ 这是赠送版的**正常**形态 ⇒ 通过
+    #   * 匹配到别的仓库 ⇒ 更新器活着且指向了一个既不是我们、也不是占位仓库的地方 ⇒ 失败
+    # ⛔ 不要退回「占位仓库必须出现」—— 见模块 docstring 里 2026-10-07 那条实测修正。
     placeholder = PLACEHOLDER_REPO.encode()
     placeholder_count = dex.count(placeholder)
     facts.append("%-58s x%d" % (placeholder.decode(), placeholder_count))
-    if not placeholder_count:
+    found = sorted({m.decode() for m in UPDATER_RELEASES_RE.findall(dex)})
+    facts.append("%-58s %s" % ("/releases URL 里的仓库路径",
+                               "、".join(found) if found else "（无 —— 更新器已被 R8 摇掉）"))
+    bad = [r for r in found if r != PLACEHOLDER_REPO]
+    if bad:
         problems.append(
-            "dex 里找不到占位仓库 %s —— 说明 WEBHTV_GIFT_MODE 没生效。"
-            "（这条是正向对照：没有它，上面「本仓库路径一条都没有」也可能只是因为整个更新器被摇掉了）"
-            % PLACEHOLDER_REPO)
+            "dex 里有指向**别的仓库**的 /releases URL：%s —— 更新器既没被摇掉，也没指向占位仓库 %s。"
+            "（合格的赠送版只会出现占位仓库，或者一条都不出现）" % ("、".join(bad), PLACEHOLDER_REPO))
 
     for needle in gate_needles:
         text = needle.encode()
@@ -154,9 +187,15 @@ def selftest():
         #    这个形态不含 "github.com/<repo>"，旧的判据会放过它。
         ("gate-on-own-repo",
          good_dex + b"\nhttps://cdn.jsdelivr.net/gh/yilishawk/webhtv-android6@main/gift/status.json\n", False),
-        # 正向对照失效：占位仓库不见了
-        ("no-placeholder",
+        # 更新器指向了**别的**仓库（既不是我们的，也不是占位仓库）—— 由第 2 条新判据捕获。
+        # （旧判据「占位仓库必须出现」也能抓到这个，但它在**正确的**赠送版上同样会误报，
+        #   见 docstring 里 2026-10-07 那条实测修正。）
+        ("updater-other-repo",
          good_dex.replace(b"gift-build/has-no-update", b"someone/else"), False),
+        # ⭐ 2026-10-07 新增：更新器整条被 R8 摇掉 —— 这是**正确**赠送版的真实形态
+        #    （首次构建 37600621657 的 4/4 个包都长这样），必须 PASS。
+        #    没有这个用例，新判据就等于没被验证过。
+        ("updater-stripped", b"Lcom/fongmi/android/tv/BuildConfig;\n" + gate, True),
         # 开关地址没注入（整条 URL 都不见了）
         ("no-gate",
          good_dex.replace(gate_url.encode(), b"https://example.invalid/gate.json"), False),
