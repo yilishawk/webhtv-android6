@@ -88,7 +88,17 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      # 不装 setup-python：ubuntu-latest 自带 python3，出厂断言脚本只用标准库。
+      # ⚠️ 这一步**不能省**，必须与正式版一致。chaquo/build.gradle 写死 python { version = "3.10" }，
+      # Chaquopy 在构建期会去本机找 Python 3.10，找不到就直接把构建打挂：
+      #   > Task :chaquo:installArm64_v8aDebugPythonRequirements FAILED
+      #   > Couldn't find Python 3.10. See https://chaquo.com/chaquopy/doc/current/android.html#buildpython
+      # 实测（2026-10-07 首次赠送版构建 37600004436）就是漏了这一步失败的。
+      # 注意：ubuntu-latest 自带的 python3 只能满足下面那个「只用标准库」的出厂断言脚本，
+      # **满足不了 Chaquopy** —— 别用「断言脚本不需要 3.10」推出「构建也不需要 3.10」。
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
       - name: Verify bundled MPV native assets
         run: bash scripts/verify_mpv_native_assets.sh --require-elf
