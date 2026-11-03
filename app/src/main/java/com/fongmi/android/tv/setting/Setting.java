@@ -297,6 +297,33 @@ public class Setting {
         Prefers.put("site_column", column);
     }
 
+    // 缓存自动清理上限档位。顺序必须与 R.array.select_cache_limit 一一对应，
+    // 索引 0 = 关闭（默认），保持老版本行为不变。
+    private static final long[] CACHE_LIMIT_BYTES = {
+            0L,
+            1L * 1024 * 1024 * 1024,
+            2L * 1024 * 1024 * 1024,
+            4L * 1024 * 1024 * 1024
+    };
+
+    public static int getCacheLimitCount() {
+        return CACHE_LIMIT_BYTES.length;
+    }
+
+    public static int getCacheLimitIndex() {
+        int index = Prefers.getInt("cache_limit_index", 0);
+        return index < 0 || index >= CACHE_LIMIT_BYTES.length ? 0 : index;
+    }
+
+    public static void putCacheLimitIndex(int index) {
+        Prefers.put("cache_limit_index", index < 0 || index >= CACHE_LIMIT_BYTES.length ? 0 : index);
+    }
+
+    /** 返回上限字节数，0 表示关闭自动清理。 */
+    public static long getCacheLimitBytes() {
+        return CACHE_LIMIT_BYTES[getCacheLimitIndex()];
+    }
+
     public static int getSyncMode() {
         return Prefers.getInt("sync_mode");
     }

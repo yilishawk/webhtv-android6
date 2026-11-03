@@ -676,6 +676,8 @@
     <string name="setting_doh">DoH</string>
     <string name="setting_proxy">Proxy</string>
     <string name="setting_cache">缓存</string>
+    <string name="cache_clear_now">立即清理</string>
+    <string name="cache_current_usage">缓存 · 当前 %s</string>
     <string name="setting_backup">备份</string>
     <string name="setting_restore">恢复</string>
     <string name="setting_about">关于</string>
@@ -1225,6 +1227,13 @@
         <item>512MB</item>
         <item>1GB</item>
         <item>2GB</item>
+    </string-array>
+
+    <string-array name="select_cache_limit">
+        <item>不自动清理</item>
+        <item>1GB</item>
+        <item>2GB</item>
+        <item>4GB</item>
     </string-array>
 
     <string-array name="select_size">

@@ -153,6 +153,30 @@ public class MediaSourceFactory implements MediaSource.Factory {
         }
     }
 
+    /** 当前正在使用 EXO 磁盘缓存的播放会话数。0 表示可以安全清理。 */
+    public static synchronized int getActiveCacheSessions() {
+        return CACHE_CAPACITY_STATE.activeSessions();
+    }
+
+    /**
+     * 供缓存自动清理使用：关闭 SimpleCache 并清空 EXO 缓存目录。
+     *
+     * <p>必须走 {@link #releaseCacheLocked(String)} 而不是直接删文件 —— SimpleCache 自己
+     * 维护一份文件索引与 journal，绕过它删文件会让索引与磁盘不一致。
+     *
+     * <p>有播放会话进行中时不做任何事，返回 0。
+     *
+     * @return 实际释放的字节数
+     */
+    public static synchronized long clearDiskCacheForAutoClean() {
+        if (CACHE_CAPACITY_STATE.activeSessions() > 0) return 0;
+        File dir = Path.exoCache();
+        long before = FileUtil.getDirectorySize(dir);
+        releaseCacheLocked("auto-clean");
+        Path.clear(dir);
+        return Math.max(0, before - FileUtil.getDirectorySize(dir));
+    }
+
     private static boolean releaseCacheLocked(String reason) {
         if (cache == null) return false;
         Cache releasing = cache;

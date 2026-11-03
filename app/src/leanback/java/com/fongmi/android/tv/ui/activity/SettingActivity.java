@@ -28,6 +28,7 @@ import com.fongmi.android.tv.setting.PlayerSetting;
 import com.fongmi.android.tv.setting.Setting;
 import com.fongmi.android.tv.ui.base.BaseActivity;
 import com.fongmi.android.tv.ui.dialog.AboutDialog;
+import com.fongmi.android.tv.ui.dialog.ChoiceDialog;
 import com.fongmi.android.tv.ui.dialog.ConfigDialog;
 import com.fongmi.android.tv.ui.dialog.DohDialog;
 import com.fongmi.android.tv.ui.dialog.HistoryDialog;
@@ -36,10 +37,12 @@ import com.fongmi.android.tv.ui.dialog.RestoreDialog;
 import com.fongmi.android.tv.ui.dialog.BackupProgressDialog;
 import com.fongmi.android.tv.ui.dialog.SiteDialog;
 import com.fongmi.android.tv.utils.AppVersion;
+import com.fongmi.android.tv.utils.CacheAutoCleaner;
 import com.fongmi.android.tv.utils.FileUtil;
 import com.fongmi.android.tv.utils.Notify;
 import com.fongmi.android.tv.utils.PermissionUtil;
 import com.fongmi.android.tv.utils.ResUtil;
+import com.fongmi.android.tv.utils.Task;
 import com.github.catvod.bean.Doh;
 import com.github.catvod.net.OkHttp;
 
@@ -296,12 +299,31 @@ public class SettingActivity extends BaseActivity implements ConfigListener, Sit
     }
 
     private void onCache(View view) {
-        FileUtil.clearCache(new Callback() {
-            @Override
-            public void success() {
-                setCacheText();
-            }
-        });
+        // 原来是「点一下立即清空」。改成先给一个设置入口，避免误触把正在用的
+        // 播放缓存和调试日志一起清掉；「立即清理」仍在同一个对话框里，一步可达。
+        String size = mBinding.cacheText.getText().toString();
+        ChoiceDialog.showSingle(getSupportFragmentManager(),
+                getString(R.string.cache_current_usage, size),
+                ResUtil.getStringArray(R.array.select_cache_limit),
+                Setting.getCacheLimitIndex(),
+                getString(R.string.cache_clear_now),
+                () -> {
+                    FileUtil.clearCache(new Callback() {
+                        @Override
+                        public void success() {
+                            setCacheText();
+                        }
+                    });
+                    return null;
+                },
+                which -> {
+                    Setting.putCacheLimitIndex(which);
+                    // 设完立刻按新上限检查一次，不必等到下次启动才生效。
+                    Task.execute(() -> {
+                        CacheAutoCleaner.runIfNeeded();
+                        setCacheText();
+                    });
+                });
     }
 
     private void onBackup(View view) {
