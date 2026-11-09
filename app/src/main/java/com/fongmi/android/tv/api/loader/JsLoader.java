@@ -32,6 +32,11 @@ public class JsLoader {
         this.recent = recent;
     }
 
+    /** 当前已加载的 js 插件 key；缓存清理据此保留正在用的产物。 */
+    public java.util.Set<String> activeKeys() {
+        return java.util.Set.copyOf(spiders.keySet());
+    }
+
     public Spider getSpider(String key, String api, String ext, String jar) {
         return spiders.computeIfAbsent(key, k -> {
             try {

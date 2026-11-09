@@ -243,6 +243,32 @@ public class WebHomeRawAdapter {
         return new WebResourceResponse("text/plain", "utf-8", code, reason, headers, new ByteArrayInputStream(bytes));
     }
 
+    /**
+     * 清空 webhome_raw 的磁盘缓存。
+     *
+     * <p>已有 client 时走它的 {@code Cache.evictAll()}，避免与正在进行的请求抢同一个目录；
+     * 没有 client 时临时打开一次缓存目录清空。</p>
+     */
+    public static boolean clearCache() {
+        synchronized (WebHomeRawAdapter.class) {
+            try {
+                File dir = Path.cache("webhome_raw");
+                if (!dir.exists()) return true;
+                if (client != null && client.cache() != null) {
+                    client.cache().evictAll();
+                    return true;
+                }
+                try (Cache reopened = new Cache(dir, CACHE_BYTES)) {
+                    reopened.evictAll();
+                }
+                return true;
+            } catch (Throwable error) {
+                SpiderDebug.log("webhome-raw", "cache clear failed error=%s", error.getMessage());
+                return false;
+            }
+        }
+    }
+
     private static OkHttpClient client() {
         if (client != null) return client;
         synchronized (WebHomeRawAdapter.class) {

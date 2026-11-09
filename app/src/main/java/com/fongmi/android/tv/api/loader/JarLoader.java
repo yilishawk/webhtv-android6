@@ -57,6 +57,11 @@ public class JarLoader {
         SpiderDebug.log("jar-loader", "recent=%s", recent);
     }
 
+    /** 当前已加载的 jar 插件 key；缓存清理据此保留正在用的解压产物。 */
+    public java.util.Set<String> activeKeys() {
+        return java.util.Set.copyOf(loaders.keySet());
+    }
+
     private void load(String key, File file) {
         long start = System.currentTimeMillis();
         if (Thread.interrupted()) {

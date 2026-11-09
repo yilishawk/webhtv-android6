@@ -86,7 +86,7 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     private Update beta;
     private Update selected;
     private boolean force;
-    private boolean downloading;
+    private volatile boolean downloading;
     private boolean canceled;
     private int lastProgress = -1;
     private long lastBytes;
@@ -99,6 +99,11 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
 
     public static Updater create() {
         return INSTANCE;
+    }
+
+    /** 是否有进行中的 APK 下载；缓存清理据此保留 {@code update.apk}。 */
+    public static boolean isDownloading() {
+        return INSTANCE.downloading;
     }
 
     private File getFile() {

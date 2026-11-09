@@ -255,6 +255,25 @@ public class KaraokeTrackRepository {
         });
     }
 
+    /**
+     * 删除 K 歌生成音轨，只删带 {@code .generated} 标记的文件。
+     *
+     * <p>用户自己放进目录的音轨不动；顺手清掉搜索缓存。</p>
+     */
+    public static boolean clearCache() {
+        File dir = trackDir();
+        File[] files = dir.listFiles();
+        if (files == null) return false;
+        boolean success = true;
+        for (File file : files) {
+            String name = file.getName();
+            if (!name.endsWith(".generated.txt") && !name.endsWith(".generated-pitch.txt")) continue;
+            if (!file.delete()) success = false;
+        }
+        clearSearchCache();
+        return success;
+    }
+
     public static void clearSearchCache() {
         synchronized (SEARCH_CACHE) {
             SEARCH_CACHE.clear();

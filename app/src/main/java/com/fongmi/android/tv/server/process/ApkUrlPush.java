@@ -69,6 +69,11 @@ public final class ApkUrlPush {
         return INSTANCE;
     }
 
+    /** 是否有进行中的 APK 传输；缓存清理据此保留半成品文件。 */
+    public static boolean isActive() {
+        return INSTANCE.active.get();
+    }
+
     StartResult start(String value, String sender) {
         HttpUrl url = ApkUrlPolicy.parse(value);
         if (!active.compareAndSet(false, true)) return StartResult.BUSY;

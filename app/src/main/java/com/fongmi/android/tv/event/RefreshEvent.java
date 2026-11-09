@@ -50,6 +50,15 @@ public class RefreshEvent {
         EventBus.getDefault().post(new RefreshEvent(Type.PLAYER));
     }
 
+    /**
+     * 缓存内容发生变化（例如一次清理结束）。
+     *
+     * <p>设置页的缓存行只在收到通知时重读清单，否则清理结果要等退出再进入页面才看得到。</p>
+     */
+    public static void cache() {
+        EventBus.getDefault().post(new RefreshEvent(Type.CACHE));
+    }
+
     public static void subtitle(String path) {
         EventBus.getDefault().post(new RefreshEvent(Type.SUBTITLE, path));
     }
@@ -89,6 +98,6 @@ public class RefreshEvent {
     }
 
     public enum Type {
-        HOME, CATEGORY, HISTORY, KEEP, SIZE, THEME, LANGUAGE, LIVE, DETAIL, PLAYER, SUBTITLE, DANMAKU, VOD
+        HOME, CATEGORY, HISTORY, KEEP, SIZE, THEME, LANGUAGE, LIVE, DETAIL, PLAYER, SUBTITLE, DANMAKU, VOD, CACHE
     }
 }

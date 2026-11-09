@@ -56,6 +56,27 @@ public final class MpvHlsCacheCoordinator {
     private boolean circuitOpen;
     private long circuitOpenedAtMs;
 
+    /**
+     * 清理 HLS 缓存目录，但仅在没有任何写入 / 读取 / 租约时。
+     *
+     * <p>直接删目录会让这里的预留账本与磁盘不一致，所以先检查三个计数器；
+     * 目录里有子目录时不动（只删平铺的文件），保持与上游一致。</p>
+     */
+    public boolean clearIfIdle() {
+        synchronized (lock) {
+            if (!writers.isEmpty() || !readers.isEmpty() || !clients.isEmpty()) return false;
+            File[] files = directory.listFiles();
+            if (files == null) return !directory.exists();
+            boolean success = true;
+            for (File file : files) {
+                if (!file.isFile()) continue;
+                if (!file.delete()) success = false;
+            }
+            if (success) circuitOpen = false;
+            return success;
+        }
+    }
+
     public static MpvHlsCacheCoordinator shared(File directory) {
         String key = canonicalPath(directory);
         return SHARED.computeIfAbsent(key, ignored -> new MpvHlsCacheCoordinator(directory));

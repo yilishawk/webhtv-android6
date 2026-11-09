@@ -26,6 +26,10 @@ import androidx.media3.extractor.ExtractorsFactory;
 import androidx.media3.extractor.ts.TsExtractor;
 
 import com.fongmi.android.tv.App;
+import com.fongmi.android.tv.cache.CacheCenter;
+import com.fongmi.android.tv.cache.CacheModuleId;
+import com.fongmi.android.tv.cache.CachePolicyStore;
+import com.fongmi.android.tv.cache.PlaybackCacheBudget;
 import com.fongmi.android.tv.player.cache.DiskCacheCapacityPolicy;
 import com.fongmi.android.tv.setting.PlaybackPerformanceSetting;
 import com.fongmi.android.tv.setting.PlayerSetting;
@@ -77,28 +81,68 @@ public class MediaSourceFactory implements MediaSource.Factory {
         return new PriorityTaskDataSource.Factory(recovered, PLAYBACK_PRIORITY_MANAGER, C.PRIORITY_PLAYBACK_PRELOAD, true);
     }
 
+    /** The two phases that decide which ceiling applies to the playback cache. */
+    private enum CapacityPhase {
+        /** A player session is open: the preload setting decides, so playback keeps its headroom. */
+        PLAYBACK,
+        /** Nothing plays: the total limit decides, so the cache converges once playback ends. */
+        IDLE
+    }
+
+    /**
+     * The cache every playback consumer uses, created for the playback phase.
+     *
+     * <p>Playback is the only reason a cache exists, so the no-argument form stays playback-phase;
+     * the idle phase is requested explicitly wherever nothing plays.</p>
+     */
     static synchronized Cache getCache() {
+        return getCache(CapacityPhase.PLAYBACK);
+    }
+
+    private static synchronized Cache getCache(CapacityPhase phase) {
         if (cache != null) return cache;
         File dir = Path.exoCache();
-        DiskCacheCapacityPolicy.Decision decision = resolveCapacity(dir, FileUtil.getDirectorySize(dir));
+        DiskCacheCapacityPolicy.Decision decision = resolveCapacity(dir, FileUtil.getDirectorySize(dir), phase);
         long capacityBytes = initialCapacityBytes(decision);
         Cache created = new SimpleCache(dir, new LeastRecentlyUsedCacheEvictor(capacityBytes), getDatabaseProvider());
         cache = created;
         CACHE_CAPACITY_STATE.recordCreated(capacityBytes);
-        if (SpiderDebug.isEnabled()) SpiderDebug.log("exo-cache", "created capacityBytes=%d policy=%s existingBytes=%d availableBytes=%d reserveBytes=%d", capacityBytes, decision.state(), decision.existingCacheBytes(), decision.availableStorageBytes(), decision.reserveBytes());
+        if (SpiderDebug.isEnabled()) SpiderDebug.log("exo-cache", "created capacityBytes=%d phase=%s policy=%s existingBytes=%d availableBytes=%d reserveBytes=%d", capacityBytes, phase, decision.state(), decision.existingCacheBytes(), decision.availableStorageBytes(), decision.reserveBytes());
         return created;
     }
 
     public static synchronized void acquireCacheSession() {
-        DiskCacheCapacityPolicy.Decision decision = refreshPendingCacheCapacity();
-        if (isReliable(decision) && CACHE_CAPACITY_STATE.canReleasePending()) rebuildCacheLocked("next-player-session");
+        DiskCacheCapacityPolicy.Decision decision = refreshPendingCacheCapacity(CapacityPhase.PLAYBACK);
+        if (isReliable(decision) && CACHE_CAPACITY_STATE.canReleasePending()) rebuildCacheLocked("next-player-session", CapacityPhase.PLAYBACK);
         CACHE_CAPACITY_STATE.acquireSession();
     }
 
+    /**
+     * Converges the cache once the last player session ends.
+     *
+     * <p>This is where the total limit takes effect for the playback cache. Rebuilding with the
+     * smaller idle capacity makes SimpleCache evict down to it while it loads its index, so the
+     * shrink happens now rather than at the next write.</p>
+     */
     public static synchronized void releaseCacheSession() {
         CACHE_CAPACITY_STATE.releaseSession();
-        DiskCacheCapacityPolicy.Decision decision = refreshPendingCacheCapacity();
-        if (isReliable(decision) && CACHE_CAPACITY_STATE.canReleasePending()) rebuildCacheLocked("last-player-release");
+        DiskCacheCapacityPolicy.Decision decision = refreshPendingCacheCapacity(CapacityPhase.IDLE);
+        if (isReliable(decision) && CACHE_CAPACITY_STATE.canReleasePending()) rebuildCacheLocked("last-player-release", CapacityPhase.IDLE);
+    }
+
+    public static synchronized boolean clearCacheIfIdle() {
+        if (CACHE_CAPACITY_STATE.activeSessions() > 0) return false;
+        if (!releaseCacheLocked("manual-cache-clear")) {
+            if (cache != null) return false;
+        }
+        Path.clear(Path.exoCache());
+        try {
+            getCache(CapacityPhase.IDLE);
+            return true;
+        } catch (RuntimeException error) {
+            if (SpiderDebug.isEnabled()) SpiderDebug.log("exo-cache", "manual-clear-rebuild-failed error=%s", error.getClass().getSimpleName());
+            return false;
+        }
     }
 
     private static StandaloneDatabaseProvider getDatabaseProvider() {
@@ -106,9 +150,37 @@ public class MediaSourceFactory implements MediaSource.Factory {
         return databaseProvider;
     }
 
-    private static DiskCacheCapacityPolicy.Decision resolveCapacity(File dir, long existingCacheBytes) {
+    private static DiskCacheCapacityPolicy.Decision resolveCapacity(File dir, long existingCacheBytes, CapacityPhase phase) {
         FileUtil.StorageSpace storage = FileUtil.getStorageSpace(dir);
-        return DiskCacheCapacityPolicy.resolve(storage.available(), PreloadSetting.getPreloadSizeBytes(PlayerSetting.EXO), existingCacheBytes, storage.availableBytes(), storage.totalBytes());
+        return DiskCacheCapacityPolicy.resolve(storage.available(), desiredCapacityBytes(phase), existingCacheBytes, storage.availableBytes(), storage.totalBytes());
+    }
+
+    /**
+     * The ceiling for the requested phase.
+     *
+     * <p>Playback answers to the preload setting so buffering, seeking and re-buffering keep the
+     * headroom the user configured. The total limit answers for the idle phase instead, where it is
+     * what makes the largest cache on the device converge as soon as playback ends.</p>
+     */
+    private static long desiredCapacityBytes(CapacityPhase phase) {
+        return PlaybackCacheBudget.capacityBytes(
+                phase == CapacityPhase.PLAYBACK,
+                CachePolicyStore.getTotalLimitBytes(),
+                playbackCeilingBytes(),
+                CacheCenter.get().cachedOthersBytes(CacheModuleId.EXO));
+    }
+
+    /**
+     * The preload ceiling, lowered by the playback limit the cache panel stores.
+     *
+     * <p>The panel row would otherwise persist a preference that no code reads: the capacity the
+     * player computes is the only thing that bounds this cache. An unset limit reports zero and
+     * leaves the preload setting deciding alone.</p>
+     */
+    private static long playbackCeilingBytes() {
+        return PlaybackCacheBudget.ceilingBytes(
+                PreloadSetting.getPreloadSizeBytes(PlayerSetting.EXO),
+                CachePolicyStore.getLimit(CacheModuleId.EXO));
     }
 
     private static long initialCapacityBytes(DiskCacheCapacityPolicy.Decision decision) {
@@ -117,25 +189,50 @@ public class MediaSourceFactory implements MediaSource.Factory {
     }
 
     static synchronized long getCacheCapacityBytes() {
-        DiskCacheCapacityPolicy.Decision decision = refreshPendingCacheCapacity();
+        DiskCacheCapacityPolicy.Decision decision = refreshPendingCacheCapacity(CapacityPhase.PLAYBACK);
         return cache == null ? initialCapacityBytes(decision) : CACHE_CAPACITY_STATE.actualCapacityBytes();
     }
 
     static synchronized long getPendingCacheCapacityBytes() {
-        refreshPendingCacheCapacity();
+        refreshPendingCacheCapacity(CapacityPhase.IDLE);
         return CACHE_CAPACITY_STATE.pendingCapacityBytes();
     }
 
+    /**
+     * The capacity the cache converges to once playback ends, for display.
+     *
+     * <p>Always answers with the idle figure: that is the number the panel promises, and it must
+     * not depend on whether a player currently holds a larger playback-phase capacity. Never scans
+     * the disk, so the settings panel can call it on the UI thread.</p>
+     */
+    public static synchronized long targetCapacityBytes() {
+        return desiredCapacityBytes(CapacityPhase.IDLE);
+    }
+
+    /**
+     * Applies a freshly configured limit without waiting for the next player release.
+     *
+     * <p>Refuses while any player session holds the cache: shrinking a SimpleCache a running
+     * player is reading would cut the buffering headroom it was promised. The release path
+     * converges later instead.</p>
+     */
+    public static synchronized boolean enforceCapacityNow() {
+        DiskCacheCapacityPolicy.Decision decision = refreshPendingCacheCapacity(CapacityPhase.IDLE);
+        if (!isReliable(decision) || !CACHE_CAPACITY_STATE.canReleasePending()) return false;
+        rebuildCacheLocked("limit-changed", CapacityPhase.IDLE);
+        return true;
+    }
+
     static synchronized ExoCacheWritePolicy.Decision getCacheWriteDecision() {
-        DiskCacheCapacityPolicy.Decision capacity = refreshPendingCacheCapacity();
+        DiskCacheCapacityPolicy.Decision capacity = refreshPendingCacheCapacity(CapacityPhase.PLAYBACK);
         long actualCapacityBytes = cache == null ? 0 : CACHE_CAPACITY_STATE.actualCapacityBytes();
         return ExoCacheWritePolicy.resolve(capacity, actualCapacityBytes);
     }
 
-    private static DiskCacheCapacityPolicy.Decision refreshPendingCacheCapacity() {
+    private static DiskCacheCapacityPolicy.Decision refreshPendingCacheCapacity(CapacityPhase phase) {
         File dir = Path.exoCache();
         long existingCacheBytes = cache == null ? FileUtil.getDirectorySize(dir) : cache.getCacheSpace();
-        DiskCacheCapacityPolicy.Decision decision = resolveCapacity(dir, existingCacheBytes);
+        DiskCacheCapacityPolicy.Decision decision = resolveCapacity(dir, existingCacheBytes, phase);
         if (isReliable(decision)) CACHE_CAPACITY_STATE.report(decision.effectiveCapacityBytes());
         return decision;
     }
@@ -144,37 +241,13 @@ public class MediaSourceFactory implements MediaSource.Factory {
         return decision.state() != DiskCacheCapacityPolicy.State.UNAVAILABLE;
     }
 
-    private static void rebuildCacheLocked(String reason) {
+    private static void rebuildCacheLocked(String reason, CapacityPhase phase) {
         if (!releaseCacheLocked(reason)) return;
         try {
-            getCache();
+            getCache(phase);
         } catch (RuntimeException e) {
-            if (SpiderDebug.isEnabled()) SpiderDebug.log("exo-cache", "rebuild-failed reason=%s error=%s", reason, e.getClass().getSimpleName());
+            if (SpiderDebug.isEnabled()) SpiderDebug.log("exo-cache", "rebuild-failed reason=%s phase=%s error=%s", reason, phase, e.getClass().getSimpleName());
         }
-    }
-
-    /** 当前正在使用 EXO 磁盘缓存的播放会话数。0 表示可以安全清理。 */
-    public static synchronized int getActiveCacheSessions() {
-        return CACHE_CAPACITY_STATE.activeSessions();
-    }
-
-    /**
-     * 供缓存自动清理使用：关闭 SimpleCache 并清空 EXO 缓存目录。
-     *
-     * <p>必须走 {@link #releaseCacheLocked(String)} 而不是直接删文件 —— SimpleCache 自己
-     * 维护一份文件索引与 journal，绕过它删文件会让索引与磁盘不一致。
-     *
-     * <p>有播放会话进行中时不做任何事，返回 0。
-     *
-     * @return 实际释放的字节数
-     */
-    public static synchronized long clearDiskCacheForAutoClean() {
-        if (CACHE_CAPACITY_STATE.activeSessions() > 0) return 0;
-        File dir = Path.exoCache();
-        long before = FileUtil.getDirectorySize(dir);
-        releaseCacheLocked("auto-clean");
-        Path.clear(dir);
-        return Math.max(0, before - FileUtil.getDirectorySize(dir));
     }
 
     private static boolean releaseCacheLocked(String reason) {

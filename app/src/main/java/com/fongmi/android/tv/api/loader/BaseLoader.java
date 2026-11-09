@@ -94,6 +94,15 @@ public class BaseLoader {
         return jarLoader.dex(jar);
     }
 
+    /** 三类插件里当前已加载的全部 key，供缓存清理判断哪些解压产物还在用。 */
+    public java.util.Set<String> activePluginKeys() {
+        java.util.HashSet<String> keys = new java.util.HashSet<>();
+        keys.addAll(jarLoader.activeKeys());
+        keys.addAll(jsLoader.activeKeys());
+        keys.addAll(pyLoader.activeKeys());
+        return java.util.Set.copyOf(keys);
+    }
+
     public JSONObject jsonExt(String key, LinkedHashMap<String, String> jxs, String url) throws Throwable {
         return jarLoader.jsonExt(key, jxs, url);
     }

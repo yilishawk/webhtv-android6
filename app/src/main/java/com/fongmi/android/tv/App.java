@@ -13,18 +13,17 @@ import androidx.annotation.Nullable;
 import androidx.core.os.HandlerCompat;
 
 import com.fongmi.android.tv.server.Server;
+import com.fongmi.android.tv.cache.CacheScheduler;
 import com.fongmi.android.tv.playback.PlaybackRemoteSyncer;
 import com.fongmi.android.tv.player.PlaybackMemoryMonitor;
 import com.fongmi.android.tv.player.PlaybackSystemConditionMonitor;
 import com.fongmi.android.tv.remote.RemoteAgent;
 import com.fongmi.android.tv.setting.ProxySetting;
 import com.fongmi.android.tv.setting.Setting;
-import com.fongmi.android.tv.utils.CacheAutoCleaner;
 import com.fongmi.android.tv.utils.DanmakuSearchListFocusFixer;
 import com.fongmi.android.tv.utils.NsdDeviceDiscovery;
 import com.fongmi.android.tv.utils.Notify;
 import com.fongmi.android.tv.utils.PreviousProcessExitLogger;
-import com.fongmi.android.tv.utils.Task;
 import com.fongmi.hook.Hook;
 import com.github.catvod.crawler.DebugLogStore;
 import com.github.catvod.crawler.SpiderDebug;
@@ -107,6 +106,7 @@ public class App extends Application implements Application.ActivityLifecycleCal
         ProxySetting.apply();
         DanmakuSearchListFocusFixer.start();
         registerActivityLifecycleCallbacks(this);
+        post(() -> CacheScheduler.get().start(), 30_000L);
         post(this::startBackgroundServices, 1200);
     }
 
@@ -128,9 +128,6 @@ public class App extends Application implements Application.ActivityLifecycleCal
         PlaybackRemoteSyncer.start();
         RemoteAgent.get().start();
         NsdDeviceDiscovery.register();
-        // 缓存总量超过用户设定上限时分级清理。放到后台线程，且不阻塞启动；
-        // 上限默认关闭（索引 0），未设置时 runIfNeeded 直接返回。
-        Task.execute(() -> CacheAutoCleaner.runIfNeeded());
         SpiderDebug.log("startup", "background services ready cost=%sms", System.currentTimeMillis() - time);
     }
 
